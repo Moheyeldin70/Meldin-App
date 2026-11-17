@@ -1,0 +1,154 @@
+{
+  "entities": {
+    "Post": {
+      "title": "Post",
+      "description": "Public platform media content published exclusively by the platform admin (Long Video, Short Video, Image, Article).",
+      "type": "object",
+      "properties": {
+        "authorId": { "type": "string", "description": "Firebase UID of the publishing admin." },
+        "authorName": { "type": "string", "description": "Display name of the publisher." },
+        "type": {
+          "type": "string",
+          "enum": ["LONG_VIDEO", "SHORT_VIDEO", "IMAGE", "ARTICLE"],
+          "description": "Content format tab category."
+        },
+        "title": { "type": "string", "description": "Content headline (1-160 chars)." },
+        "description": { "type": "string", "description": "Summary or caption (0-1000 chars)." },
+        "bodyText": { "type": "string", "description": "Full article text body (optional, 0-20000 chars)." },
+        "mediaUrl": { "type": "string", "description": "Media URL or compressed image data URI (optional, 0-350000 chars)." },
+        "thumbnailUrl": { "type": "string", "description": "Thumbnail URL or compressed image data URI (optional, 0-350000 chars)." },
+        "category": { "type": "string", "description": "Topic tag (1-50 chars)." },
+        "durationSeconds": { "type": "integer", "description": "Video duration in seconds (0-86400)." },
+        "languageTag": { "type": "string", "description": "ISO language code or 'all' (2-10 chars)." },
+        "likesCount": { "type": "integer", "description": "Non-negative count of user likes." },
+        "commentsCount": { "type": "integer", "description": "Non-negative count of comments." },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Server timestamp on creation." },
+        "updatedAt": { "type": "string", "format": "date-time", "description": "Server timestamp on update." }
+      },
+      "required": ["authorId", "authorName", "type", "title", "description", "category", "createdAt", "updatedAt"]
+    },
+    "Comment": {
+      "title": "Comment",
+      "description": "User comment on a published post.",
+      "type": "object",
+      "properties": {
+        "postId": { "type": "string", "description": "Parent post document ID." },
+        "userId": { "type": "string", "description": "Author UID." },
+        "authorName": { "type": "string", "description": "Author display name." },
+        "authorPhotoUrl": { "type": "string", "description": "Optional author avatar URL." },
+        "text": { "type": "string", "description": "Comment text (1-1000 chars)." },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Server timestamp on creation." },
+        "updatedAt": { "type": "string", "format": "date-time", "description": "Server timestamp on update." }
+      },
+      "required": ["postId", "userId", "authorName", "text", "createdAt", "updatedAt"]
+    },
+    "PostLike": {
+      "title": "PostLike",
+      "description": "Per-user like record on a published post.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "description": "Liker UID." },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Server timestamp." }
+      },
+      "required": ["userId", "createdAt"]
+    },
+    "SavedPost": {
+      "title": "SavedPost",
+      "description": "Published post bookmarked to a user's personal library.",
+      "type": "object",
+      "properties": {
+        "postId": { "type": "string", "description": "Original post ID." },
+        "userId": { "type": "string", "description": "Owner UID." },
+        "type": {
+          "type": "string",
+          "enum": ["LONG_VIDEO", "SHORT_VIDEO", "IMAGE", "ARTICLE"],
+          "description": "Content type."
+        },
+        "title": { "type": "string", "description": "Snapshot title." },
+        "description": { "type": "string", "description": "Snapshot description." },
+        "authorName": { "type": "string", "description": "Publisher name." },
+        "thumbnailUrl": { "type": "string", "description": "Optional thumbnail." },
+        "mediaUrl": { "type": "string", "description": "Optional media URL." },
+        "category": { "type": "string", "description": "Category label." },
+        "durationSeconds": { "type": "integer", "description": "Duration in seconds." },
+        "savedAt": { "type": "string", "format": "date-time", "description": "Server timestamp when bookmarked." }
+      },
+      "required": ["postId", "userId", "type", "title", "savedAt"]
+    },
+    "PrivateItem": {
+      "title": "PrivateItem",
+      "description": "Private content item created by an individual user, visible only to them.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "description": "Owner UID." },
+        "type": {
+          "type": "string",
+          "enum": ["LONG_VIDEO", "SHORT_VIDEO", "IMAGE", "ARTICLE"],
+          "description": "Content format type."
+        },
+        "title": { "type": "string", "description": "Title (1-160 chars)." },
+        "description": { "type": "string", "description": "Description (0-1000 chars)." },
+        "bodyText": { "type": "string", "description": "Optional article body (0-20000 chars)." },
+        "mediaUrl": { "type": "string", "description": "Optional media URL or data URI." },
+        "thumbnailUrl": { "type": "string", "description": "Optional thumbnail URL or data URI." },
+        "category": { "type": "string", "description": "Category tag (1-50 chars)." },
+        "durationSeconds": { "type": "integer", "description": "Duration in seconds." },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Server timestamp on creation." },
+        "updatedAt": { "type": "string", "format": "date-time", "description": "Server timestamp on update." }
+      },
+      "required": ["userId", "type", "title", "description", "category", "createdAt", "updatedAt"]
+    },
+    "PrivateSettings": {
+      "title": "PrivateSettings",
+      "description": "User's private security settings such as hashed Admin Dashboard passcode.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "description": "Owner UID." },
+        "passwordHash": { "type": "string", "description": "SHA-256 hex digest of salted password." },
+        "salt": { "type": "string", "description": "Random hex salt." },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Server timestamp on creation." },
+        "updatedAt": { "type": "string", "format": "date-time", "description": "Server timestamp on update." }
+      },
+      "required": ["userId", "passwordHash", "salt", "createdAt", "updatedAt"]
+    },
+    "AdminRecord": {
+      "title": "AdminRecord",
+      "description": "Optional server-managed admin UID registry.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "description": "Admin Firebase UID." }
+      },
+      "required": ["uid"]
+    }
+  },
+  "firestore": {
+    "/posts/{postId}": {
+      "schema": { "$ref": "#/entities/Post" },
+      "description": "Published platform content across Long Videos, Short Videos, Images, and Articles."
+    },
+    "/posts/{postId}/comments/{commentId}": {
+      "schema": { "$ref": "#/entities/Comment" },
+      "description": "Authenticated user comments on a published post."
+    },
+    "/posts/{postId}/likes/{userId}": {
+      "schema": { "$ref": "#/entities/PostLike" },
+      "description": "Per-user like marker for a published post."
+    },
+    "/users/{userId}/saved_posts/{postId}": {
+      "schema": { "$ref": "#/entities/SavedPost" },
+      "description": "User's personal saved library of platform posts."
+    },
+    "/users/{userId}/private_items/{itemId}": {
+      "schema": { "$ref": "#/entities/PrivateItem" },
+      "description": "User's private content items visible only to the owner."
+    },
+    "/users/{userId}/private_settings/{docId}": {
+      "schema": { "$ref": "#/entities/PrivateSettings" },
+      "description": "User's private security settings including hashed admin dashboard password."
+    },
+    "/admins/{uid}": {
+      "schema": { "$ref": "#/entities/AdminRecord" },
+      "description": "Read-only admin registry managed via Firebase Console."
+    }
+  }
+}

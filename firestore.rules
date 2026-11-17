@@ -1,0 +1,286 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global default-deny safety net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // --- Primitive Helpers ---
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isAdmin() {
+      return isSignedIn() && (
+        ('email' in request.auth.token &&
+         'email_verified' in request.auth.token &&
+         request.auth.token.email == 'moheyeldinemad9@gmail.com' &&
+         request.auth.token.email_verified == true) ||
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+      );
+    }
+
+    function isValidContentType(t) {
+      return t in ['LONG_VIDEO', 'SHORT_VIDEO', 'IMAGE', 'ARTICLE'];
+    }
+
+    // --- Validation Helpers ---
+    function isValidPost(data) {
+      return data.authorId is string && data.authorId.size() >= 1 && data.authorId.size() <= 128 &&
+             data.authorName is string && data.authorName.size() >= 1 && data.authorName.size() <= 80 &&
+             data.type is string && isValidContentType(data.type) &&
+             data.title is string && data.title.size() >= 1 && data.title.size() <= 160 &&
+             data.description is string && data.description.size() <= 1000 &&
+             data.category is string && data.category.size() >= 1 && data.category.size() <= 50 &&
+             (!('bodyText' in data) || (data.bodyText is string && data.bodyText.size() <= 20000)) &&
+             (!('mediaUrl' in data) || (data.mediaUrl is string && data.mediaUrl.size() <= 350000)) &&
+             (!('thumbnailUrl' in data) || (data.thumbnailUrl is string && data.thumbnailUrl.size() <= 350000)) &&
+             (!('durationSeconds' in data) || (data.durationSeconds is int && data.durationSeconds >= 0 && data.durationSeconds <= 86400)) &&
+             (!('languageTag' in data) || (data.languageTag is string && data.languageTag.size() >= 2 && data.languageTag.size() <= 10)) &&
+             (!('likesCount' in data) || (data.likesCount is int && data.likesCount >= 0)) &&
+             (!('commentsCount' in data) || (data.commentsCount is int && data.commentsCount >= 0));
+    }
+
+    function isValidComment(data) {
+      return data.postId is string && isValidId(data.postId) &&
+             data.userId is string && data.userId.size() >= 1 && data.userId.size() <= 128 &&
+             data.authorName is string && data.authorName.size() >= 1 && data.authorName.size() <= 80 &&
+             data.text is string && data.text.size() >= 1 && data.text.size() <= 1000 &&
+             (!('authorPhotoUrl' in data) || (data.authorPhotoUrl is string && data.authorPhotoUrl.size() <= 500));
+    }
+
+    function isValidSavedPost(data) {
+      return data.postId is string && isValidId(data.postId) &&
+             data.userId is string && data.userId.size() >= 1 && data.userId.size() <= 128 &&
+             data.type is string && isValidContentType(data.type) &&
+             data.title is string && data.title.size() >= 1 && data.title.size() <= 160 &&
+             (!('description' in data) || (data.description is string && data.description.size() <= 1000)) &&
+             (!('authorName' in data) || (data.authorName is string && data.authorName.size() <= 80)) &&
+             (!('thumbnailUrl' in data) || (data.thumbnailUrl is string && data.thumbnailUrl.size() <= 350000)) &&
+             (!('mediaUrl' in data) || (data.mediaUrl is string && data.mediaUrl.size() <= 350000)) &&
+             (!('category' in data) || (data.category is string && data.category.size() <= 50)) &&
+             (!('durationSeconds' in data) || (data.durationSeconds is int && data.durationSeconds >= 0 && data.durationSeconds <= 86400));
+    }
+
+    function isValidPrivateItem(data) {
+      return data.userId is string && data.userId.size() >= 1 && data.userId.size() <= 128 &&
+             data.type is string && isValidContentType(data.type) &&
+             data.title is string && data.title.size() >= 1 && data.title.size() <= 160 &&
+             data.description is string && data.description.size() <= 1000 &&
+             data.category is string && data.category.size() >= 1 && data.category.size() <= 50 &&
+             (!('bodyText' in data) || (data.bodyText is string && data.bodyText.size() <= 20000)) &&
+             (!('mediaUrl' in data) || (data.mediaUrl is string && data.mediaUrl.size() <= 350000)) &&
+             (!('thumbnailUrl' in data) || (data.thumbnailUrl is string && data.thumbnailUrl.size() <= 350000)) &&
+             (!('durationSeconds' in data) || (data.durationSeconds is int && data.durationSeconds >= 0 && data.durationSeconds <= 86400));
+    }
+
+    function isValidPrivateSettings(data) {
+      return data.userId is string && data.userId.size() >= 1 && data.userId.size() <= 128 &&
+             data.passwordHash is string && data.passwordHash.size() == 64 &&
+             data.salt is string && data.salt.size() >= 16 && data.salt.size() <= 64;
+    }
+
+    // --- Collection Rules ---
+
+    // Admin registry (read own admin doc only)
+    match /admins/{uid} {
+      allow get: if isOwner(uid) && isValidId(uid);
+      allow list, create, update, delete: if false;
+    }
+
+    // Published platform posts (public to signed-in users; writable only by admin, except atomic +/-1 counter updates)
+    match /posts/{postId} {
+      allow get: if isSignedIn() && isValidId(postId);
+      allow list: if isSignedIn() && existing().type in ['LONG_VIDEO', 'SHORT_VIDEO', 'IMAGE', 'ARTICLE'];
+
+      allow create: if isAdmin() &&
+                       isValidId(postId) &&
+                       isValidPost(incoming()) &&
+                       incoming().authorId == request.auth.uid &&
+                       incoming().keys().hasAll(['authorId', 'authorName', 'type', 'title', 'description', 'category', 'createdAt', 'updatedAt']) &&
+                       incoming().keys().hasOnly([
+                         'authorId', 'authorName', 'type', 'title', 'description',
+                         'bodyText', 'mediaUrl', 'thumbnailUrl', 'category',
+                         'durationSeconds', 'languageTag', 'likesCount', 'commentsCount',
+                         'createdAt', 'updatedAt'
+                       ]) &&
+                       incoming().createdAt is timestamp && incoming().createdAt <= request.time &&
+                       incoming().updatedAt is timestamp && incoming().updatedAt <= request.time;
+
+      allow update: if isSignedIn() &&
+                       isValidId(postId) &&
+                       isValidPost(incoming()) &&
+                       incoming().authorId == existing().authorId &&
+                       incoming().createdAt == existing().createdAt &&
+                       incoming().updatedAt is timestamp && incoming().updatedAt <= request.time &&
+                       (
+                         isAdmin() ||
+                         (
+                           incoming().diff(existing()).affectedKeys().hasOnly(['likesCount', 'commentsCount', 'updatedAt']) &&
+                           (!('likesCount' in incoming()) || !('likesCount' in existing()) ||
+                             incoming().likesCount == existing().likesCount ||
+                             incoming().likesCount == existing().likesCount + 1 ||
+                             incoming().likesCount == existing().likesCount - 1) &&
+                           (!('commentsCount' in incoming()) || !('commentsCount' in existing()) ||
+                             incoming().commentsCount == existing().commentsCount ||
+                             incoming().commentsCount == existing().commentsCount + 1 ||
+                             incoming().commentsCount == existing().commentsCount - 1)
+                         )
+                       );
+
+      allow delete: if isAdmin() && isValidId(postId);
+
+      // Comments subcollection
+      match /comments/{commentId} {
+        allow get: if isSignedIn() && isValidId(postId) && isValidId(commentId);
+        allow list: if isSignedIn() && existing().postId == postId;
+
+        allow create: if isSignedIn() &&
+                         isValidId(postId) &&
+                         isValidId(commentId) &&
+                         isValidComment(incoming()) &&
+                         incoming().userId == request.auth.uid &&
+                         incoming().postId == postId &&
+                         exists(/databases/$(database)/documents/posts/$(postId)) &&
+                         incoming().keys().hasAll(['postId', 'userId', 'authorName', 'text', 'createdAt', 'updatedAt']) &&
+                         incoming().keys().hasOnly(['postId', 'userId', 'authorName', 'authorPhotoUrl', 'text', 'createdAt', 'updatedAt']) &&
+                         incoming().createdAt is timestamp && incoming().createdAt <= request.time &&
+                         incoming().updatedAt is timestamp && incoming().updatedAt <= request.time;
+
+        allow update: if isSignedIn() &&
+                         isValidId(postId) &&
+                         isValidId(commentId) &&
+                         isValidComment(incoming()) &&
+                         existing().userId == request.auth.uid &&
+                         incoming().userId == existing().userId &&
+                         incoming().postId == existing().postId &&
+                         incoming().createdAt == existing().createdAt &&
+                         incoming().updatedAt is timestamp && incoming().updatedAt <= request.time &&
+                         incoming().diff(existing()).affectedKeys().hasOnly(['text', 'updatedAt']);
+
+        allow delete: if isSignedIn() &&
+                         isValidId(postId) &&
+                         isValidId(commentId) &&
+                         (existing().userId == request.auth.uid || isAdmin());
+      }
+
+      // Per-user likes subcollection
+      match /likes/{userId} {
+        allow get: if isOwner(userId) && isValidId(postId) && isValidId(userId);
+        allow list: if isOwner(userId);
+
+        allow create: if isOwner(userId) &&
+                         isValidId(postId) &&
+                         isValidId(userId) &&
+                         incoming().userId == request.auth.uid &&
+                         exists(/databases/$(database)/documents/posts/$(postId)) &&
+                         incoming().keys().hasAll(['userId', 'createdAt']) &&
+                         incoming().keys().hasOnly(['userId', 'createdAt']) &&
+                         incoming().createdAt is timestamp && incoming().createdAt <= request.time;
+
+        allow update: if false;
+
+        allow delete: if isOwner(userId) && isValidId(postId) && isValidId(userId);
+      }
+    }
+
+    // User personal library (saved posts)
+    match /users/{userId}/saved_posts/{postId} {
+      allow get: if isOwner(userId) && isValidId(postId);
+      allow list: if isOwner(userId);
+
+      allow create: if isOwner(userId) &&
+                       isValidId(postId) &&
+                       isValidSavedPost(incoming()) &&
+                       incoming().userId == request.auth.uid &&
+                       incoming().postId == postId &&
+                       incoming().keys().hasAll(['postId', 'userId', 'type', 'title', 'savedAt']) &&
+                       incoming().keys().hasOnly([
+                         'postId', 'userId', 'type', 'title', 'description',
+                         'authorName', 'thumbnailUrl', 'mediaUrl', 'category',
+                         'durationSeconds', 'savedAt'
+                       ]) &&
+                       incoming().savedAt is timestamp && incoming().savedAt <= request.time;
+
+      allow update: if false;
+
+      allow delete: if isOwner(userId) && isValidId(postId);
+    }
+
+    // User private studio items (strictly private to owner)
+    match /users/{userId}/private_items/{itemId} {
+      allow get: if isOwner(userId) && isValidId(itemId);
+      allow list: if isOwner(userId);
+
+      allow create: if isOwner(userId) &&
+                       isValidId(itemId) &&
+                       isValidPrivateItem(incoming()) &&
+                       incoming().userId == request.auth.uid &&
+                       incoming().keys().hasAll(['userId', 'type', 'title', 'description', 'category', 'createdAt', 'updatedAt']) &&
+                       incoming().keys().hasOnly([
+                         'userId', 'type', 'title', 'description',
+                         'bodyText', 'mediaUrl', 'thumbnailUrl', 'category',
+                         'durationSeconds', 'createdAt', 'updatedAt'
+                       ]) &&
+                       incoming().createdAt is timestamp && incoming().createdAt <= request.time &&
+                       incoming().updatedAt is timestamp && incoming().updatedAt <= request.time;
+
+      allow update: if isOwner(userId) &&
+                       isValidId(itemId) &&
+                       isValidPrivateItem(incoming()) &&
+                       incoming().userId == existing().userId &&
+                       incoming().createdAt == existing().createdAt &&
+                       incoming().updatedAt is timestamp && incoming().updatedAt <= request.time &&
+                       incoming().diff(existing()).affectedKeys().hasOnly([
+                         'type', 'title', 'description', 'bodyText',
+                         'mediaUrl', 'thumbnailUrl', 'category',
+                         'durationSeconds', 'updatedAt'
+                       ]);
+
+      allow delete: if isOwner(userId) && isValidId(itemId);
+    }
+
+    // User private settings (Admin Dashboard hashed password)
+    match /users/{userId}/private_settings/{docId} {
+      allow get: if isOwner(userId) && isValidId(docId);
+      allow list: if isOwner(userId);
+
+      allow create: if isOwner(userId) &&
+                       isValidId(docId) &&
+                       isValidPrivateSettings(incoming()) &&
+                       incoming().userId == request.auth.uid &&
+                       incoming().keys().hasAll(['userId', 'passwordHash', 'salt', 'createdAt', 'updatedAt']) &&
+                       incoming().keys().hasOnly(['userId', 'passwordHash', 'salt', 'createdAt', 'updatedAt']) &&
+                       incoming().createdAt is timestamp && incoming().createdAt <= request.time &&
+                       incoming().updatedAt is timestamp && incoming().updatedAt <= request.time;
+
+      allow update: if isOwner(userId) &&
+                       isValidId(docId) &&
+                       isValidPrivateSettings(incoming()) &&
+                       incoming().userId == existing().userId &&
+                       incoming().createdAt == existing().createdAt &&
+                       incoming().updatedAt is timestamp && incoming().updatedAt <= request.time &&
+                       incoming().diff(existing()).affectedKeys().hasOnly(['passwordHash', 'salt', 'updatedAt']);
+
+      allow delete: if isOwner(userId) && isValidId(docId);
+    }
+  }
+}

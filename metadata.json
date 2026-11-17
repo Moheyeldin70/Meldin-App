@@ -1,0 +1,6 @@
+{
+  "name": "Meldin",
+  "description": "A multilingual media and publishing platform with long videos, short videos, images, articles, personal libraries, private creations, and a password-protected admin publishing dashboard.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
