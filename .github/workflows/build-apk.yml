@@ -112,18 +112,31 @@ jobs:
   release:
     name: Publish GitHub Release
     needs: build-apk
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
-      - name: Download Debug APK
+      - name: Download Built APKs
         uses: actions/download-artifact@v4
         with:
-          name: Meldin-debug-apk
+          pattern: Meldin-*-apk
           path: release-files
+          merge-multiple: true
 
-      - name: Attach APK to GitHub Release
+      - name: Attach APK to Tag Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        continue-on-error: true
         uses: softprops/action-gh-release@v2
         with:
+          files: release-files/*.apk
+
+      - name: Publish Latest Rolling APK Release
+        if: "!startsWith(github.ref, 'refs/tags/v')"
+        continue-on-error: true
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest-apk
+          name: Latest Meldin APK
+          prerelease: true
           files: release-files/*.apk
