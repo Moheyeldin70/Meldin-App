@@ -58,8 +58,13 @@ jobs:
               -dname "CN=Android Debug,O=Android,C=US"
           fi
           [ -f .env ] || cp .env.example .env
-          if [ ! -f app/google-services.json ] && [ -n "$GOOGLE_SERVICES_JSON" ]; then
-            echo "$GOOGLE_SERVICES_JSON" > app/google-services.json
+          if [ ! -f app/google-services.json ]; then
+            if [ -n "$GOOGLE_SERVICES_JSON" ]; then
+              echo "$GOOGLE_SERVICES_JSON" > app/google-services.json
+            else
+              echo "::warning::app/google-services.json is missing and GOOGLE_SERVICES_JSON secret is not set. Firebase Auth & Firestore will show setup required in this APK."
+              echo "Warning: app/google-services.json was not found and GOOGLE_SERVICES_JSON secret is not set." >> "$GITHUB_STEP_SUMMARY"
+            fi
           fi
 
       - name: Build Debug APK

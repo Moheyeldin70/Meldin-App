@@ -9,13 +9,24 @@ import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.border
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.safeDrawingPadding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Article
 import androidx.compose.material.icons.automirrored.outlined.Article
@@ -38,6 +49,7 @@ import androidx.compose.material3.NavigationRailItemDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
@@ -49,11 +61,17 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
@@ -90,6 +108,7 @@ import com.example.ui.theme.MeldinTheme
 import com.example.ui.theme.ThemePreference
 import com.example.ui.viewmodel.MeldinViewModel
 import com.google.firebase.Firebase
+import com.google.firebase.FirebaseApp
 import com.google.firebase.auth.FirebaseUser
 import com.google.firebase.auth.auth
 import com.google.firebase.firestore.FirebaseFirestore
@@ -140,18 +159,10 @@ fun MeldinRoot() {
 
     var showSplash by rememberSaveable { mutableStateOf(true) }
 
-    val auth = remember { Firebase.auth }
-    val currentUser by auth.authStateFlow().collectAsStateWithLifecycle(initialValue = auth.currentUser)
-
-    LaunchedEffect(Unit) {
-        val credentialManager = CredentialManager.create(context)
-        attemptAutoSignIn(
-            context = context,
-            credentialManager = credentialManager,
-            onAuthSuccess = {},
-            onUnauthenticated = {},
-            scope = scope
-        )
+    val isFirebaseReady = remember(context) {
+        FirebaseApp.getApps(context).isNotEmpty() || runCatching {
+            FirebaseApp.initializeApp(context) != null
+        }.getOrDefault(false)
     }
 
     CompositionLocalProvider(
@@ -166,28 +177,109 @@ fun MeldinRoot() {
             ) { splashActive ->
                 if (splashActive) {
                     MeldinSplashScreen(onFinished = { showSplash = false })
+                } else if (!isFirebaseReady) {
+                    FirebaseConfigMissingScreen()
                 } else {
-                    val user = currentUser
-                    if (user == null) {
-                        AuthScreen(
-                            themePreference = themePreference,
-                            currentLanguageCode = languageCode,
-                            onChangeTheme = { pref -> scope.launch { prefsManager.setThemePreference(pref) } },
-                            onSelectLanguage = { code -> scope.launch { prefsManager.setLanguageCode(code) } },
-                            onAuthSuccess = {}
-                        )
-                    } else {
-                        key(user.uid) {
-                            AuthenticatedMeldinShell(
-                                user = user,
-                                themePreference = themePreference,
-                                currentLanguageCode = languageCode,
-                                onChangeTheme = { pref -> scope.launch { prefsManager.setThemePreference(pref) } },
-                                onSelectLanguage = { code -> scope.launch { prefsManager.setLanguageCode(code) } }
-                            )
-                        }
-                    }
+                    MeldinAuthenticatedHost(
+                        themePreference = themePreference,
+                        languageCode = languageCode,
+                        onChangeTheme = { pref -> scope.launch { prefsManager.setThemePreference(pref) } },
+                        onSelectLanguage = { code -> scope.launch { prefsManager.setLanguageCode(code) } }
+                    )
                 }
+            }
+        }
+    }
+}
+
+@Composable
+private fun MeldinAuthenticatedHost(
+    themePreference: ThemePreference,
+    languageCode: String,
+    onChangeTheme: (ThemePreference) -> Unit,
+    onSelectLanguage: (String) -> Unit
+) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val auth = remember { Firebase.auth }
+    val currentUser by auth.authStateFlow().collectAsStateWithLifecycle(initialValue = auth.currentUser)
+
+    LaunchedEffect(Unit) {
+        runCatching {
+            val credentialManager = CredentialManager.create(context)
+            attemptAutoSignIn(
+                context = context,
+                credentialManager = credentialManager,
+                onAuthSuccess = {},
+                onUnauthenticated = {},
+                scope = scope
+            )
+        }
+    }
+
+    val user = currentUser
+    if (user == null) {
+        AuthScreen(
+            themePreference = themePreference,
+            currentLanguageCode = languageCode,
+            onChangeTheme = onChangeTheme,
+            onSelectLanguage = onSelectLanguage,
+            onAuthSuccess = {}
+        )
+    } else {
+        key(user.uid) {
+            AuthenticatedMeldinShell(
+                user = user,
+                themePreference = themePreference,
+                currentLanguageCode = languageCode,
+                onChangeTheme = onChangeTheme,
+                onSelectLanguage = onSelectLanguage
+            )
+        }
+    }
+}
+
+@Composable
+private fun FirebaseConfigMissingScreen() {
+    val strings = LocalMeldinStrings.current
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .safeDrawingPadding()
+            .padding(24.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Surface(
+            color = MaterialTheme.colorScheme.surfaceContainer,
+            shape = RoundedCornerShape(24.dp),
+            modifier = Modifier.widthIn(max = 460.dp)
+        ) {
+            Column(
+                modifier = Modifier.padding(24.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(14.dp)
+            ) {
+                Image(
+                    painter = painterResource(id = R.drawable.meldin_logo),
+                    contentDescription = strings.appName,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier
+                        .size(72.dp)
+                        .clip(RoundedCornerShape(18.dp))
+                        .border(2.dp, MaterialTheme.colorScheme.primary, RoundedCornerShape(18.dp))
+                )
+                Text(
+                    text = "Firebase Configuration Missing",
+                    style = MaterialTheme.typography.headlineMedium.copy(fontWeight = FontWeight.Bold),
+                    color = MaterialTheme.colorScheme.onSurface,
+                    textAlign = TextAlign.Center
+                )
+                Text(
+                    text = "This APK was built without app/google-services.json. Add app/google-services.json to your repository or set the GOOGLE_SERVICES_JSON secret in GitHub Actions and rebuild the APK.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    textAlign = TextAlign.Center
+                )
             }
         }
     }

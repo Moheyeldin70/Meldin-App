@@ -151,6 +151,7 @@ fun MeldinSplashScreen(
                         .scale(ringExpand.value)
                 ) {
                     val center = Offset(size.width / 2f, size.height / 2f)
+                    val glowRadius = ((size.minDimension / 2f) * glowPulse).coerceAtLeast(1f)
                     drawCircle(
                         brush = Brush.radialGradient(
                             colors = listOf(
@@ -158,9 +159,9 @@ fun MeldinSplashScreen(
                                 primaryColor.copy(alpha = 0.0f)
                             ),
                             center = center,
-                            radius = (size.minDimension / 2f) * glowPulse
+                            radius = glowRadius
                         ),
-                        radius = (size.minDimension / 2f) * glowPulse,
+                        radius = glowRadius,
                         center = center
                     )
 
