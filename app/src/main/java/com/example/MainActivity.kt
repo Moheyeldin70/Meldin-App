@@ -2,7 +2,6 @@ package com.example
 
 import android.os.Bundle
 import androidx.activity.ComponentActivity
-import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.animation.AnimatedContent
@@ -18,12 +17,16 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Article
+import androidx.compose.material.icons.automirrored.outlined.Article
 import androidx.compose.material.icons.filled.Bookmarks
-import androidx.compose.material.icons.filled.Explore
-import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.Image
+import androidx.compose.material.icons.filled.Movie
+import androidx.compose.material.icons.filled.SmartDisplay
 import androidx.compose.material.icons.outlined.Bookmarks
-import androidx.compose.material.icons.outlined.Explore
-import androidx.compose.material.icons.outlined.Person
+import androidx.compose.material.icons.outlined.Image
+import androidx.compose.material.icons.outlined.Movie
+import androidx.compose.material.icons.outlined.SmartDisplay
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
@@ -47,20 +50,30 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.credentials.CredentialManager
 import androidx.lifecycle.ViewModelProvider.AndroidViewModelFactory.Companion.APPLICATION_KEY
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
+import androidx.navigation.NavDestination.Companion.hierarchy
+import androidx.navigation.NavGraph.Companion.findStartDestination
+import androidx.navigation.compose.NavHost
+import androidx.navigation.compose.composable
+import androidx.navigation.compose.currentBackStackEntryAsState
+import androidx.navigation.compose.rememberNavController
 import com.example.data.PreferencesManager
 import com.example.data.auth.attemptAutoSignIn
 import com.example.data.auth.authStateFlow
+import com.example.data.model.ContentType
 import com.example.data.model.Post
 import com.example.data.model.UiState
 import com.example.data.repository.MeldinRepository
@@ -69,7 +82,7 @@ import com.example.localization.SupportedLanguages
 import com.example.localization.getStringsForLanguage
 import com.example.ui.components.AccountScreen
 import com.example.ui.components.AuthScreen
-import com.example.ui.components.ExploreScreen
+import com.example.ui.components.ContentFeedScreen
 import com.example.ui.components.LibraryScreen
 import com.example.ui.components.MeldinSplashScreen
 import com.example.ui.components.PostDetailDialog
@@ -82,11 +95,21 @@ import com.google.firebase.auth.auth
 import com.google.firebase.firestore.FirebaseFirestore
 import kotlinx.coroutines.launch
 
-enum class AppDestination {
-    EXPLORE,
-    LIBRARY,
-    ACCOUNT
+object MeldinRoutes {
+    const val ROUTE_LONG_VIDEOS = "long_videos"
+    const val ROUTE_SHORT_VIDEOS = "short_videos"
+    const val ROUTE_IMAGES = "images"
+    const val ROUTE_ARTICLES = "articles"
+    const val ROUTE_LIBRARY = "library"
+    const val ROUTE_ACCOUNT = "account"
 }
+
+private data class BottomNavItem(
+    val route: String,
+    val label: String,
+    val selectedIcon: ImageVector,
+    val unselectedIcon: ImageVector
+)
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -208,7 +231,6 @@ private fun AuthenticatedMeldinShell(
     val savedPostsState by viewModel.savedPostsState.collectAsStateWithLifecycle()
     val privateItemsState by viewModel.privateItemsState.collectAsStateWithLifecycle()
     val adminConfig by viewModel.adminSecurityConfig.collectAsStateWithLifecycle()
-    val selectedTab by viewModel.selectedTab.collectAsStateWithLifecycle()
     val searchQuery by viewModel.searchQuery.collectAsStateWithLifecycle()
     val selectedCategory by viewModel.selectedCategory.collectAsStateWithLifecycle()
     val isAdmin by viewModel.isAdmin.collectAsStateWithLifecycle()
@@ -219,7 +241,11 @@ private fun AuthenticatedMeldinShell(
     val activeCommentsState by viewModel.activeCommentsState.collectAsStateWithLifecycle()
     val isActivePostLiked by viewModel.isActivePostLiked.collectAsStateWithLifecycle()
 
-    var destination by rememberSaveable { mutableStateOf(AppDestination.EXPLORE) }
+    val navController = rememberNavController()
+    val navBackStackEntry by navController.currentBackStackEntryAsState()
+    val currentDestination = navBackStackEntry?.destination
+    val isOnAccountScreen = currentDestination?.route == MeldinRoutes.ROUTE_ACCOUNT
+
     var libraryInitialSubTab by rememberSaveable { mutableStateOf(0) }
     var fallbackPost by remember { mutableStateOf<Post?>(null) }
 
@@ -232,20 +258,61 @@ private fun AuthenticatedMeldinShell(
         }
     }
 
-    if (destination != AppDestination.EXPLORE) {
-        BackHandler { destination = AppDestination.EXPLORE }
-    }
-
     val allPosts = (postsState as? UiState.Success)?.data ?: emptyList()
     val savedPostIds = remember(savedPostsState) {
         (savedPostsState as? UiState.Success)?.data?.map { it.postId }?.toSet() ?: emptySet()
     }
 
-    val navItems = listOf(
-        Triple(AppDestination.EXPLORE, strings.explore, Pair(Icons.Filled.Explore, Icons.Outlined.Explore)),
-        Triple(AppDestination.LIBRARY, strings.library, Pair(Icons.Filled.Bookmarks, Icons.Outlined.Bookmarks)),
-        Triple(AppDestination.ACCOUNT, strings.account, Pair(Icons.Filled.Person, Icons.Outlined.Person))
-    )
+    val bottomNavItems = remember(strings) {
+        listOf(
+            BottomNavItem(
+                route = MeldinRoutes.ROUTE_LONG_VIDEOS,
+                label = strings.longVideos,
+                selectedIcon = Icons.Filled.Movie,
+                unselectedIcon = Icons.Outlined.Movie
+            ),
+            BottomNavItem(
+                route = MeldinRoutes.ROUTE_SHORT_VIDEOS,
+                label = strings.shortVideos,
+                selectedIcon = Icons.Filled.SmartDisplay,
+                unselectedIcon = Icons.Outlined.SmartDisplay
+            ),
+            BottomNavItem(
+                route = MeldinRoutes.ROUTE_IMAGES,
+                label = strings.images,
+                selectedIcon = Icons.Filled.Image,
+                unselectedIcon = Icons.Outlined.Image
+            ),
+            BottomNavItem(
+                route = MeldinRoutes.ROUTE_ARTICLES,
+                label = strings.articles,
+                selectedIcon = Icons.AutoMirrored.Filled.Article,
+                unselectedIcon = Icons.AutoMirrored.Outlined.Article
+            ),
+            BottomNavItem(
+                route = MeldinRoutes.ROUTE_LIBRARY,
+                label = strings.library,
+                selectedIcon = Icons.Filled.Bookmarks,
+                unselectedIcon = Icons.Outlined.Bookmarks
+            )
+        )
+    }
+
+    fun navigateToTab(route: String) {
+        navController.navigate(route) {
+            popUpTo(navController.graph.findStartDestination().id) {
+                saveState = true
+            }
+            launchSingleTop = true
+            restoreState = true
+        }
+    }
+
+    fun navigateToAccount() {
+        navController.navigate(MeldinRoutes.ROUTE_ACCOUNT) {
+            launchSingleTop = true
+        }
+    }
 
     BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
         val useNavRail = maxWidth >= 600.dp
@@ -254,28 +321,37 @@ private fun AuthenticatedMeldinShell(
             contentWindowInsets = WindowInsets.safeDrawing,
             snackbarHost = { SnackbarHost(snackbarHostState) },
             bottomBar = {
-                if (!useNavRail) {
+                if (!useNavRail && !isOnAccountScreen) {
                     NavigationBar(
                         containerColor = MaterialTheme.colorScheme.surfaceContainerLow
                     ) {
-                        navItems.forEach { (dest, label, icons) ->
-                            val selected = destination == dest
+                        bottomNavItems.forEach { item ->
+                            val selected = currentDestination?.hierarchy?.any { it.route == item.route } == true
                             NavigationBarItem(
                                 selected = selected,
-                                onClick = { destination = dest },
+                                onClick = { navigateToTab(item.route) },
                                 icon = {
                                     Icon(
-                                        imageVector = if (selected) icons.first else icons.second,
-                                        contentDescription = label
+                                        imageVector = if (selected) item.selectedIcon else item.unselectedIcon,
+                                        contentDescription = item.label
                                     )
                                 },
-                                label = { Text(label) },
+                                label = {
+                                    Text(
+                                        text = item.label,
+                                        maxLines = 1,
+                                        softWrap = false,
+                                        overflow = TextOverflow.Ellipsis,
+                                        fontSize = 10.sp
+                                    )
+                                },
+                                alwaysShowLabel = true,
                                 colors = NavigationBarItemDefaults.colors(
                                     selectedIconColor = MaterialTheme.colorScheme.onPrimaryContainer,
                                     selectedTextColor = MaterialTheme.colorScheme.primary,
                                     indicatorColor = MaterialTheme.colorScheme.primaryContainer
                                 ),
-                                modifier = Modifier.testTag("nav_${dest.name.lowercase()}")
+                                modifier = Modifier.testTag("nav_${item.route}")
                             )
                         }
                     }
@@ -287,105 +363,180 @@ private fun AuthenticatedMeldinShell(
                     .fillMaxSize()
                     .padding(innerPadding)
             ) {
-                if (useNavRail) {
+                if (useNavRail && !isOnAccountScreen) {
                     NavigationRail(
                         containerColor = MaterialTheme.colorScheme.surfaceContainerLow
                     ) {
-                        navItems.forEach { (dest, label, icons) ->
-                            val selected = destination == dest
+                        bottomNavItems.forEach { item ->
+                            val selected = currentDestination?.hierarchy?.any { it.route == item.route } == true
                             NavigationRailItem(
                                 selected = selected,
-                                onClick = { destination = dest },
+                                onClick = { navigateToTab(item.route) },
                                 icon = {
                                     Icon(
-                                        imageVector = if (selected) icons.first else icons.second,
-                                        contentDescription = label
+                                        imageVector = if (selected) item.selectedIcon else item.unselectedIcon,
+                                        contentDescription = item.label
                                     )
                                 },
-                                label = { Text(label) },
+                                label = {
+                                    Text(
+                                        text = item.label,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                },
                                 colors = NavigationRailItemDefaults.colors(
                                     selectedIconColor = MaterialTheme.colorScheme.onPrimaryContainer,
                                     selectedTextColor = MaterialTheme.colorScheme.primary,
                                     indicatorColor = MaterialTheme.colorScheme.primaryContainer
                                 ),
-                                modifier = Modifier.testTag("rail_${dest.name.lowercase()}")
+                                modifier = Modifier.testTag("rail_${item.route}")
                             )
                         }
                     }
                 }
 
                 Box(modifier = Modifier.weight(1f)) {
-                    AnimatedContent(
-                        targetState = destination,
-                        transitionSpec = { fadeIn(tween(200)) togetherWith fadeOut(tween(150)) },
-                        label = "destination_transition"
-                    ) { activeDest ->
-                        when (activeDest) {
-                            AppDestination.EXPLORE -> {
-                                ExploreScreen(
-                                    postsState = postsState,
-                                    savedPostIds = savedPostIds,
-                                    selectedTab = selectedTab,
-                                    searchQuery = searchQuery,
-                                    selectedCategory = selectedCategory,
-                                    onSelectTab = viewModel::selectTab,
-                                    onSearchQueryChange = viewModel::updateSearchQuery,
-                                    onSelectCategory = viewModel::selectCategory,
-                                    onOpenPost = { post ->
-                                        fallbackPost = post
-                                        viewModel.openPost(post.id)
-                                    },
-                                    onToggleSave = viewModel::toggleSavePost,
-                                    onNavigateToPrivateStudio = {
-                                        libraryInitialSubTab = 1
-                                        destination = AppDestination.LIBRARY
-                                    }
-                                )
-                            }
-                            AppDestination.LIBRARY -> {
-                                LibraryScreen(
-                                    savedPostsState = savedPostsState,
-                                    privateItemsState = privateItemsState,
-                                    allPosts = allPosts,
-                                    initialSubTab = libraryInitialSubTab,
-                                    isBusy = isBusy,
-                                    onOpenPost = { post ->
-                                        fallbackPost = post
-                                        viewModel.openPost(post.id)
-                                    },
-                                    onUnsavePost = { saved ->
-                                        val stub = Post(id = saved.postId, title = saved.title, type = saved.type)
-                                        viewModel.toggleSavePost(stub, currentlySaved = true)
-                                    },
-                                    onCreatePrivateItem = viewModel::createPrivateItem,
-                                    onUpdatePrivateItem = viewModel::updatePrivateItem,
-                                    onDeletePrivateItem = viewModel::deletePrivateItem
-                                )
-                            }
-                            AppDestination.ACCOUNT -> {
-                                AccountScreen(
-                                    userName = displayName,
-                                    userEmail = user.email,
-                                    userPhotoUrl = photoUrl,
-                                    isAdmin = isAdmin,
-                                    isAdminUnlocked = isAdminUnlocked,
-                                    adminConfig = adminConfig,
-                                    postsState = postsState,
-                                    isBusy = isBusy,
-                                    themePreference = themePreference,
-                                    currentLanguageCode = currentLanguageCode,
-                                    onChangeTheme = onChangeTheme,
-                                    onSelectLanguage = onSelectLanguage,
-                                    onVerifyAdminPassword = viewModel::verifyAndUnlockAdmin,
-                                    onSetAdminPassword = viewModel::setAndUnlockAdminPassword,
-                                    onLockAdmin = viewModel::lockAdminDashboard,
-                                    onPublishPost = viewModel::publishPost,
-                                    onUpdatePost = viewModel::updatePost,
-                                    onDeletePost = viewModel::deletePost,
-                                    onPublishStarterPack = viewModel::publishStarterPack,
-                                    onAccountSwitched = {}
-                                )
-                            }
+                    NavHost(
+                        navController = navController,
+                        startDestination = MeldinRoutes.ROUTE_LONG_VIDEOS,
+                        enterTransition = { fadeIn(tween(220)) },
+                        exitTransition = { fadeOut(tween(180)) }
+                    ) {
+                        composable(MeldinRoutes.ROUTE_LONG_VIDEOS) {
+                            ContentFeedScreen(
+                                contentType = ContentType.LONG_VIDEO,
+                                postsState = postsState,
+                                savedPostIds = savedPostIds,
+                                searchQuery = searchQuery,
+                                selectedCategory = selectedCategory,
+                                onSearchQueryChange = viewModel::updateSearchQuery,
+                                onSelectCategory = viewModel::selectCategory,
+                                onOpenPost = { post ->
+                                    fallbackPost = post
+                                    viewModel.openPost(post.id)
+                                },
+                                onToggleSave = viewModel::toggleSavePost,
+                                onNavigateToPrivateStudio = {
+                                    libraryInitialSubTab = 1
+                                    navigateToTab(MeldinRoutes.ROUTE_LIBRARY)
+                                },
+                                onOpenAccount = ::navigateToAccount
+                            )
+                        }
+
+                        composable(MeldinRoutes.ROUTE_SHORT_VIDEOS) {
+                            ContentFeedScreen(
+                                contentType = ContentType.SHORT_VIDEO,
+                                postsState = postsState,
+                                savedPostIds = savedPostIds,
+                                searchQuery = searchQuery,
+                                selectedCategory = selectedCategory,
+                                onSearchQueryChange = viewModel::updateSearchQuery,
+                                onSelectCategory = viewModel::selectCategory,
+                                onOpenPost = { post ->
+                                    fallbackPost = post
+                                    viewModel.openPost(post.id)
+                                },
+                                onToggleSave = viewModel::toggleSavePost,
+                                onNavigateToPrivateStudio = {
+                                    libraryInitialSubTab = 1
+                                    navigateToTab(MeldinRoutes.ROUTE_LIBRARY)
+                                },
+                                onOpenAccount = ::navigateToAccount
+                            )
+                        }
+
+                        composable(MeldinRoutes.ROUTE_IMAGES) {
+                            ContentFeedScreen(
+                                contentType = ContentType.IMAGE,
+                                postsState = postsState,
+                                savedPostIds = savedPostIds,
+                                searchQuery = searchQuery,
+                                selectedCategory = selectedCategory,
+                                onSearchQueryChange = viewModel::updateSearchQuery,
+                                onSelectCategory = viewModel::selectCategory,
+                                onOpenPost = { post ->
+                                    fallbackPost = post
+                                    viewModel.openPost(post.id)
+                                },
+                                onToggleSave = viewModel::toggleSavePost,
+                                onNavigateToPrivateStudio = {
+                                    libraryInitialSubTab = 1
+                                    navigateToTab(MeldinRoutes.ROUTE_LIBRARY)
+                                },
+                                onOpenAccount = ::navigateToAccount
+                            )
+                        }
+
+                        composable(MeldinRoutes.ROUTE_ARTICLES) {
+                            ContentFeedScreen(
+                                contentType = ContentType.ARTICLE,
+                                postsState = postsState,
+                                savedPostIds = savedPostIds,
+                                searchQuery = searchQuery,
+                                selectedCategory = selectedCategory,
+                                onSearchQueryChange = viewModel::updateSearchQuery,
+                                onSelectCategory = viewModel::selectCategory,
+                                onOpenPost = { post ->
+                                    fallbackPost = post
+                                    viewModel.openPost(post.id)
+                                },
+                                onToggleSave = viewModel::toggleSavePost,
+                                onNavigateToPrivateStudio = {
+                                    libraryInitialSubTab = 1
+                                    navigateToTab(MeldinRoutes.ROUTE_LIBRARY)
+                                },
+                                onOpenAccount = ::navigateToAccount
+                            )
+                        }
+
+                        composable(MeldinRoutes.ROUTE_LIBRARY) {
+                            LibraryScreen(
+                                savedPostsState = savedPostsState,
+                                privateItemsState = privateItemsState,
+                                allPosts = allPosts,
+                                initialSubTab = libraryInitialSubTab,
+                                isBusy = isBusy,
+                                onOpenPost = { post ->
+                                    fallbackPost = post
+                                    viewModel.openPost(post.id)
+                                },
+                                onUnsavePost = { saved ->
+                                    val stub = Post(id = saved.postId, title = saved.title, type = saved.type)
+                                    viewModel.toggleSavePost(stub, currentlySaved = true)
+                                },
+                                onCreatePrivateItem = viewModel::createPrivateItem,
+                                onUpdatePrivateItem = viewModel::updatePrivateItem,
+                                onDeletePrivateItem = viewModel::deletePrivateItem,
+                                onOpenAccount = ::navigateToAccount
+                            )
+                        }
+
+                        composable(MeldinRoutes.ROUTE_ACCOUNT) {
+                            AccountScreen(
+                                userName = displayName,
+                                userEmail = user.email,
+                                userPhotoUrl = photoUrl,
+                                isAdmin = isAdmin,
+                                isAdminUnlocked = isAdminUnlocked,
+                                adminConfig = adminConfig,
+                                postsState = postsState,
+                                isBusy = isBusy,
+                                themePreference = themePreference,
+                                currentLanguageCode = currentLanguageCode,
+                                onChangeTheme = onChangeTheme,
+                                onSelectLanguage = onSelectLanguage,
+                                onVerifyAdminPassword = viewModel::verifyAndUnlockAdmin,
+                                onSetAdminPassword = viewModel::setAndUnlockAdminPassword,
+                                onLockAdmin = viewModel::lockAdminDashboard,
+                                onPublishPost = viewModel::publishPost,
+                                onUpdatePost = viewModel::updatePost,
+                                onDeletePost = viewModel::deletePost,
+                                onPublishStarterPack = viewModel::publishStarterPack,
+                                onAccountSwitched = {},
+                                onBack = { navController.popBackStack() }
+                            )
                         }
                     }
                 }

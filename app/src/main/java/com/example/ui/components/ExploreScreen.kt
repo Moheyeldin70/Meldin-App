@@ -9,7 +9,6 @@ import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -41,7 +40,7 @@ import androidx.compose.material.icons.filled.ChatBubbleOutline
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.Image
-import androidx.compose.material.icons.filled.Movie
+import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.PlayCircle
 import androidx.compose.material.icons.filled.Search
@@ -58,11 +57,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.ScrollableTabRow
 import androidx.compose.material3.Surface
-import androidx.compose.material3.Tab
-import androidx.compose.material3.TabRowDefaults
-import androidx.compose.material3.TabRowDefaults.tabIndicatorOffset
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -88,25 +83,32 @@ import com.example.data.model.UiState
 import com.example.localization.LocalMeldinStrings
 
 @Composable
-fun ExploreScreen(
+fun ContentFeedScreen(
+    contentType: ContentType,
     postsState: UiState<List<Post>>,
     savedPostIds: Set<String>,
-    selectedTab: ContentType,
     searchQuery: String,
     selectedCategory: String?,
-    onSelectTab: (ContentType) -> Unit,
     onSearchQueryChange: (String) -> Unit,
     onSelectCategory: (String?) -> Unit,
     onOpenPost: (Post) -> Unit,
     onToggleSave: (Post, Boolean) -> Unit,
     onNavigateToPrivateStudio: () -> Unit,
+    onOpenAccount: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val strings = LocalMeldinStrings.current
     var showSearchBar by remember { mutableStateOf(false) }
 
+    val screenTitle = when (contentType) {
+        ContentType.LONG_VIDEO -> strings.longVideos
+        ContentType.SHORT_VIDEO -> strings.shortVideos
+        ContentType.IMAGE -> strings.images
+        ContentType.ARTICLE -> strings.articles
+    }
+
     Column(modifier = modifier.fillMaxSize()) {
-        // Brand Header
+        // Brand + Section Header with Search & Account/Admin button
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -114,7 +116,10 @@ fun ExploreScreen(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.weight(1f)
+            ) {
                 Image(
                     painter = painterResource(id = R.drawable.meldin_logo),
                     contentDescription = strings.appName,
@@ -127,25 +132,54 @@ fun ExploreScreen(
                 Spacer(Modifier.width(10.dp))
                 Column {
                     Text(
-                        text = strings.appName,
+                        text = screenTitle,
                         style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
-                        color = MaterialTheme.colorScheme.onBackground
+                        color = MaterialTheme.colorScheme.onBackground,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Text(
+                        text = strings.appName,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.primary
                     )
                 }
             }
 
-            IconButton(
-                onClick = {
-                    showSearchBar = !showSearchBar
-                    if (!showSearchBar) onSearchQueryChange("")
-                },
-                modifier = Modifier.testTag("toggle_search_button")
-            ) {
-                Icon(
-                    imageVector = if (showSearchBar) Icons.Filled.Close else Icons.Filled.Search,
-                    contentDescription = strings.searchHint,
-                    tint = MaterialTheme.colorScheme.onBackground
-                )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                IconButton(
+                    onClick = {
+                        showSearchBar = !showSearchBar
+                        if (!showSearchBar) onSearchQueryChange("")
+                    },
+                    modifier = Modifier.testTag("toggle_search_button")
+                ) {
+                    Icon(
+                        imageVector = if (showSearchBar) Icons.Filled.Close else Icons.Filled.Search,
+                        contentDescription = strings.searchHint,
+                        tint = MaterialTheme.colorScheme.onBackground
+                    )
+                }
+
+                IconButton(
+                    onClick = onOpenAccount,
+                    modifier = Modifier.testTag("top_account_button")
+                ) {
+                    Surface(
+                        shape = CircleShape,
+                        color = MaterialTheme.colorScheme.primaryContainer,
+                        modifier = Modifier.size(34.dp)
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(
+                                imageVector = Icons.Filled.Person,
+                                contentDescription = strings.account,
+                                tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
+                    }
+                }
             }
         }
 
@@ -162,64 +196,6 @@ fun ExploreScreen(
                     .padding(horizontal = 16.dp, vertical = 6.dp)
                     .testTag("explore_search_input")
             )
-        }
-
-        // 4 Content Format Tabs: Long Videos, Short Videos, Images, Articles
-        val tabs = ContentType.entries
-        val selectedIndex = tabs.indexOf(selectedTab).coerceAtLeast(0)
-        ScrollableTabRow(
-            selectedTabIndex = selectedIndex,
-            containerColor = MaterialTheme.colorScheme.background,
-            contentColor = MaterialTheme.colorScheme.primary,
-            edgePadding = 12.dp,
-            indicator = { tabPositions ->
-                if (selectedIndex < tabPositions.size) {
-                    TabRowDefaults.SecondaryIndicator(
-                        modifier = Modifier.tabIndicatorOffset(tabPositions[selectedIndex]),
-                        height = 3.dp,
-                        color = MaterialTheme.colorScheme.primary
-                    )
-                }
-            }
-        ) {
-            tabs.forEach { tab ->
-                val label = when (tab) {
-                    ContentType.LONG_VIDEO -> strings.longVideos
-                    ContentType.SHORT_VIDEO -> strings.shortVideos
-                    ContentType.IMAGE -> strings.images
-                    ContentType.ARTICLE -> strings.articles
-                }
-                val icon = when (tab) {
-                    ContentType.LONG_VIDEO -> Icons.Filled.Movie
-                    ContentType.SHORT_VIDEO -> Icons.Filled.SmartDisplay
-                    ContentType.IMAGE -> Icons.Filled.Image
-                    ContentType.ARTICLE -> Icons.AutoMirrored.Filled.Article
-                }
-                val isSelected = tab == selectedTab
-                Tab(
-                    selected = isSelected,
-                    onClick = { onSelectTab(tab) },
-                    modifier = Modifier.testTag("tab_${tab.name.lowercase()}"),
-                    text = {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(
-                                imageVector = icon,
-                                contentDescription = null,
-                                modifier = Modifier.size(18.dp),
-                                tint = if (isSelected) MaterialTheme.colorScheme.primary
-                                else MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                            Spacer(Modifier.width(6.dp))
-                            Text(
-                                text = label,
-                                style = MaterialTheme.typography.labelLarge,
-                                color = if (isSelected) MaterialTheme.colorScheme.primary
-                                else MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                    }
-                )
-            }
         }
 
         when (postsState) {
@@ -244,8 +220,8 @@ fun ExploreScreen(
                 }
             }
             is UiState.Success -> {
-                val tabPosts = remember(postsState.data, selectedTab) {
-                    postsState.data.filter { it.resolvedType() == selectedTab }
+                val tabPosts = remember(postsState.data, contentType) {
+                    postsState.data.filter { it.resolvedType() == contentType }
                 }
                 val categories = remember(tabPosts) {
                     tabPosts.map { it.category }.filter { it.isNotBlank() }.distinct()
@@ -264,7 +240,7 @@ fun ExploreScreen(
 
                 if (categories.isNotEmpty()) {
                     LazyRow(
-                        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 10.dp),
+                        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 6.dp),
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         item {
@@ -293,7 +269,7 @@ fun ExploreScreen(
                 }
 
                 AnimatedContent(
-                    targetState = Pair(selectedTab, filteredPosts),
+                    targetState = Pair(contentType, filteredPosts),
                     transitionSpec = {
                         fadeIn(tween(220)) togetherWith fadeOut(tween(180))
                     },
@@ -497,7 +473,6 @@ private fun ShortVideoReelFeed(
                         )
                 )
 
-                // Center Play Callout
                 Surface(
                     shape = CircleShape,
                     color = MaterialTheme.colorScheme.primary.copy(alpha = 0.92f),
@@ -515,7 +490,6 @@ private fun ShortVideoReelFeed(
                     }
                 }
 
-                // Side Action Rail
                 Column(
                     modifier = Modifier
                         .align(Alignment.BottomEnd)
@@ -546,7 +520,6 @@ private fun ShortVideoReelFeed(
                     }
                 }
 
-                // Bottom Overlay Metadata
                 Column(
                     modifier = Modifier
                         .align(Alignment.BottomStart)

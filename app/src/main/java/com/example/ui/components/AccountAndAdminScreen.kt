@@ -114,6 +114,7 @@ fun AccountScreen(
     onDeletePost: (String) -> Unit,
     onPublishStarterPack: () -> Unit,
     onAccountSwitched: () -> Unit,
+    onBack: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     val strings = LocalMeldinStrings.current
@@ -132,11 +133,25 @@ fun AccountScreen(
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
-        Text(
-            text = strings.account,
-            style = MaterialTheme.typography.headlineMedium,
-            color = MaterialTheme.colorScheme.onBackground
-        )
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            if (onBack != null) {
+                IconButton(
+                    onClick = onBack,
+                    modifier = Modifier.testTag("account_back_button")
+                ) {
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                        contentDescription = strings.cancel
+                    )
+                }
+                Spacer(Modifier.width(4.dp))
+            }
+            Text(
+                text = strings.account,
+                style = MaterialTheme.typography.headlineMedium,
+                color = MaterialTheme.colorScheme.onBackground
+            )
+        }
 
         // User Profile Card
         Surface(

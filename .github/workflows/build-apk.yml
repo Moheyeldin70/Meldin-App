@@ -3,18 +3,16 @@ name: Build Meldin APK
 on:
   push:
     branches:
-      - main
-      - master
+      - "**"
     tags:
       - "v*"
   pull_request:
     branches:
-      - main
-      - master
+      - "**"
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   build-apk:
@@ -30,6 +28,14 @@ jobs:
         with:
           distribution: temurin
           java-version: "21"
+
+      - name: Set up Android SDK & Accept Licenses
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK 36 Platform & Build Tools
+        run: |
+          yes | sdkmanager --licenses > /dev/null || true
+          sdkmanager "platform-tools" "platforms;android-36" "build-tools;36.0.0" || true
 
       - name: Set up Gradle 9.3.1
         uses: gradle/actions/setup-gradle@v4
@@ -51,10 +57,14 @@ jobs:
       - name: Build Debug APK
         run: gradle :app:assembleDebug --no-daemon
 
-      - name: Prepare Debug APK artifact
+      - name: Collect Debug APK
         run: |
           mkdir -p artifacts
-          cp app/build/outputs/apk/debug/app-debug.apk artifacts/Meldin-debug.apk
+          APK_PATH=$(find app/build/outputs/apk/debug -name "*.apk" | head -n 1)
+          test -n "$APK_PATH"
+          cp "$APK_PATH" artifacts/Meldin-debug.apk
+          echo "### Meldin APK Built Successfully" >> "$GITHUB_STEP_SUMMARY"
+          echo "Download **Meldin-debug-apk** from the Artifacts section of this workflow run." >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload Debug APK artifact
         uses: actions/upload-artifact@v4
@@ -72,7 +82,9 @@ jobs:
         run: |
           echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > "$KEYSTORE_PATH"
           gradle :app:assembleRelease --no-daemon
-          cp app/build/outputs/apk/release/app-release.apk artifacts/Meldin-release.apk
+          REL_APK=$(find app/build/outputs/apk/release -name "*.apk" | head -n 1)
+          test -n "$REL_APK"
+          cp "$REL_APK" artifacts/Meldin-release.apk
 
       - name: Upload Release APK artifact
         if: ${{ secrets.KEYSTORE_BASE64 != '' && secrets.STORE_PASSWORD != '' && secrets.KEY_PASSWORD != '' }}
@@ -82,8 +94,21 @@ jobs:
           path: artifacts/Meldin-release.apk
           retention-days: 30
 
-      - name: Attach APK to GitHub Release on version tags
-        if: startsWith(github.ref, 'refs/tags/v')
+  release:
+    name: Publish GitHub Release
+    needs: build-apk
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download Debug APK
+        uses: actions/download-artifact@v4
+        with:
+          name: Meldin-debug-apk
+          path: release-files
+
+      - name: Attach APK to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: artifacts/*.apk
+          files: release-files/*.apk
