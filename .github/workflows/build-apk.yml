@@ -74,20 +74,27 @@ jobs:
           retention-days: 30
 
       - name: Build Signed Release APK (when release secrets are set)
-        if: ${{ secrets.KEYSTORE_BASE64 != '' && secrets.STORE_PASSWORD != '' && secrets.KEY_PASSWORD != '' }}
+        id: release_apk
         env:
-          KEYSTORE_PATH: ${{ github.workspace }}/my-upload-key.jks
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
           STORE_PASSWORD: ${{ secrets.STORE_PASSWORD }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+          KEYSTORE_PATH: ${{ github.workspace }}/my-upload-key.jks
         run: |
-          echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > "$KEYSTORE_PATH"
-          gradle :app:assembleRelease --no-daemon
-          REL_APK=$(find app/build/outputs/apk/release -name "*.apk" | head -n 1)
-          test -n "$REL_APK"
-          cp "$REL_APK" artifacts/Meldin-release.apk
+          if [ -n "$KEYSTORE_BASE64" ] && [ -n "$STORE_PASSWORD" ] && [ -n "$KEY_PASSWORD" ]; then
+            echo "$KEYSTORE_BASE64" | base64 -d > "$KEYSTORE_PATH"
+            gradle :app:assembleRelease --no-daemon
+            REL_APK=$(find app/build/outputs/apk/release -name "*.apk" | head -n 1)
+            test -n "$REL_APK"
+            cp "$REL_APK" artifacts/Meldin-release.apk
+            echo "built=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Release signing secrets not configured; skipping signed release APK."
+            echo "built=false" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Upload Release APK artifact
-        if: ${{ secrets.KEYSTORE_BASE64 != '' && secrets.STORE_PASSWORD != '' && secrets.KEY_PASSWORD != '' }}
+        if: steps.release_apk.outputs.built == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: Meldin-release-apk
