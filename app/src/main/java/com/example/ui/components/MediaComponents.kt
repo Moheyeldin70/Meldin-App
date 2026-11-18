@@ -26,8 +26,8 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Article
 import androidx.compose.material.icons.automirrored.filled.OpenInNew
-import androidx.compose.material.icons.filled.Article
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
@@ -194,7 +194,7 @@ fun MeldinMediaPlaceholder(
         ContentType.LONG_VIDEO -> Icons.Filled.PlayCircle
         ContentType.SHORT_VIDEO -> Icons.Filled.SmartDisplay
         ContentType.IMAGE -> Icons.Filled.Image
-        ContentType.ARTICLE -> Icons.Filled.Article
+        ContentType.ARTICLE -> Icons.AutoMirrored.Filled.Article
     }
 
     Box(
