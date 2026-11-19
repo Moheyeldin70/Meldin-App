@@ -13,6 +13,7 @@ import androidx.credentials.GetCredentialRequest
 import androidx.credentials.exceptions.GetCredentialCancellationException
 import androidx.credentials.exceptions.GetCredentialException
 import androidx.credentials.exceptions.NoCredentialException
+import com.example.R
 import com.google.android.libraries.identity.googleid.GetGoogleIdOption
 import com.google.android.libraries.identity.googleid.GetSignInWithGoogleOption
 import com.google.android.libraries.identity.googleid.GoogleIdTokenCredential
@@ -22,7 +23,9 @@ import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.auth.FirebaseUser
 import com.google.firebase.auth.GoogleAuthProvider
 import com.google.firebase.auth.auth
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
@@ -34,7 +37,8 @@ import java.security.MessageDigest
 import java.security.SecureRandom
 
 private const val TAG = "AuthHelper"
-private const val EXPECTED_DEBUG_SHA1 = "B4:46:DA:DC:29:93:E4:56:C1:A4:71:37:39:80:7E:96:0E:9D:55:4D"
+internal const val EXPECTED_DEBUG_SHA1 = "B4:46:DA:DC:29:93:E4:56:C1:A4:71:37:39:80:7E:96:0E:9D:55:4D"
+private var activeAutoSignInJob: Job? = null
 
 private tailrec fun Context.findActivity(): Activity? = when (this) {
     is Activity -> this
@@ -50,15 +54,10 @@ fun FirebaseAuth.authStateFlow(): Flow<FirebaseUser?> = callbackFlow {
     awaitClose { removeAuthStateListener(listener) }
 }
 
-private fun resolveWebClientId(context: Context): String? {
-    val resId = context.resources.getIdentifier(
-        "default_web_client_id",
-        "string",
-        context.packageName
-    )
-    if (resId == 0) return null
-    return runCatching { context.getString(resId) }.getOrNull()?.takeIf { it.isNotBlank() }
-}
+private fun resolveWebClientId(context: Context): String? =
+    runCatching { context.getString(R.string.default_web_client_id) }
+        .getOrNull()
+        ?.takeIf { it.isNotBlank() }
 
 private fun getAppSigningSha1(context: Context): String? = runCatching {
     val pm = context.packageManager
@@ -111,26 +110,29 @@ private fun isReauthError(message: String?): Boolean {
     return lower.contains("reauth") || lower.contains("[16]") || lower.contains("16:")
 }
 
-private fun formatSignInFailureMessage(context: Context, e: Exception): String {
+internal fun formatSignInFailureMessage(
+    context: Context,
+    e: Exception,
+    actualSha1Override: String? = null
+): String {
     val raw = e.localizedMessage?.takeIf { it.isNotBlank() }
         ?: (e as? GetCredentialException)?.errorMessage?.toString()?.takeIf { it.isNotBlank() }
         ?: "Google Sign-In failed (${e::class.java.simpleName})"
     val lower = raw.lowercase()
-    val actualSha1 = getAppSigningSha1(context)
+    val actualSha1 = actualSha1Override ?: getAppSigningSha1(context)
+
+    if (actualSha1 != null && !actualSha1.equals(EXPECTED_DEBUG_SHA1, ignoreCase = true)) {
+        return "$raw\n\nSigning SHA-1 mismatch for ${context.packageName}:\n• This APK SHA-1: $actualSha1\n• Registered Firebase SHA-1: $EXPECTED_DEBUG_SHA1\nEnsure debug.keystore.base64 is in your repository (or add $actualSha1 in Firebase Console -> Project settings -> Your apps) and rebuild."
+    }
+
+    val shaNote = actualSha1 ?: "unavailable"
     return when {
         e is NoCredentialException ->
-            "No Google account credential available on this device. Ensure a Google account is signed in and Google Play Services is updated. ($raw)"
-        isReauthError(raw) || lower.contains("28444") || lower.contains("developer") || lower.contains("10:") || lower.contains("sha") -> {
-            when {
-                actualSha1 != null && !actualSha1.equals(EXPECTED_DEBUG_SHA1, ignoreCase = true) ->
-                    "$raw\n\nThis APK's signing SHA-1 ($actualSha1) does not match the registered Firebase SHA-1 ($EXPECTED_DEBUG_SHA1). Push debug.keystore.base64 to GitHub or add this SHA-1 in Firebase Console."
-                actualSha1 != null ->
-                    "$raw\n\nAPK SHA-1 matches ($actualSha1). Please ensure your device has a screen lock/PIN set, clear Google Play Services cache, or confirm this Google account is allowed on the project's OAuth consent screen."
-                else ->
-                    "$raw\n\nCheck that the APK signing SHA-1 matches Firebase Console and your Google account is signed in on the device."
-            }
-        }
-        else -> raw
+            "$raw\n\nAPK SHA-1: $shaNote. Ensure a Google account is signed in on this device, screen lock is enabled, and Google Play Services is updated."
+        isReauthError(raw) || lower.contains("28444") || lower.contains("developer") || lower.contains("10:") || lower.contains("sha") ->
+            "$raw\n\nAPK SHA-1: $shaNote (matches Firebase). Check:\n1. Re-authenticate or re-add your Google account in device Settings -> Accounts if prompted.\n2. Confirm your email is listed on Google Cloud OAuth Consent Screen (Test Users) or publish the consent screen.\n3. Ensure a device screen lock (PIN/pattern) is set and Google Play Services cache is clear."
+        else ->
+            "$raw (APK SHA-1: $shaNote)"
     }
 }
 
@@ -151,7 +153,8 @@ fun attemptAutoSignIn(
         return
     }
     val hostContext: Context = context.findActivity() ?: context
-    scope.launch {
+    activeAutoSignInJob?.cancel()
+    activeAutoSignInJob = scope.launch {
         try {
             val googleIdOption = GetGoogleIdOption.Builder()
                 .setFilterByAuthorizedAccounts(true)
@@ -171,6 +174,8 @@ fun attemptAutoSignIn(
             } else {
                 onUnauthenticated()
             }
+        } catch (ce: CancellationException) {
+            throw ce
         } catch (_: Exception) {
             onUnauthenticated()
         }
@@ -211,6 +216,8 @@ fun onGoogleSignInClicked(
         onAuthError("Unable to resolve Activity for Credential Manager")
         return
     }
+    activeAutoSignInJob?.cancel()
+    activeAutoSignInJob = null
     scope.launch {
         try {
             val signInOption = GetSignInWithGoogleOption.Builder(serverClientId = clientId).build()
@@ -220,39 +227,15 @@ fun onGoogleSignInClicked(
             val cred = credentialManager.getCredential(activity, request).credential
             signInWithGoogleIdToken(cred, onAuthSuccess, onAuthError)
         } catch (e: GetCredentialCancellationException) {
-            Log.w(TAG, "Primary Google Sign-In flow cancelled/reauth: ${e.message}", e)
-            if (isReauthError(e.message)) {
-                // Retry once after clearing stale Credential Manager state using a separate single-option GetGoogleIdOption request
-                try {
-                    runCatching {
-                        credentialManager.clearCredentialState(ClearCredentialStateRequest())
-                    }
-                    val googleIdOption = GetGoogleIdOption.Builder()
-                        .setFilterByAuthorizedAccounts(false)
-                        .setServerClientId(clientId)
-                        .setAutoSelectEnabled(false)
-                        .build()
-                    val fallbackRequest = GetCredentialRequest.Builder()
-                        .addCredentialOption(googleIdOption)
-                        .build()
-                    val fallbackCred = credentialManager.getCredential(activity, fallbackRequest).credential
-                    signInWithGoogleIdToken(fallbackCred, onAuthSuccess, onAuthError)
-                } catch (fallbackEx: GetCredentialCancellationException) {
-                    Log.w(TAG, "Fallback Google ID Sign-In also cancelled/reauth: ${fallbackEx.message}", fallbackEx)
-                    if (isConfigurationOrPlayServicesError(fallbackEx.message)) {
-                        onAuthError(formatSignInFailureMessage(activity, fallbackEx))
-                    } else {
-                        onAuthCancelled()
-                    }
-                } catch (fallbackEx: Exception) {
-                    Log.e(TAG, "Fallback Google ID Sign-In failed", fallbackEx)
-                    onAuthError(formatSignInFailureMessage(activity, fallbackEx))
-                }
-            } else if (isConfigurationOrPlayServicesError(e.message)) {
+            val diagnosticMsg = e.message ?: e.errorMessage?.toString() ?: e.localizedMessage
+            Log.w(TAG, "Google Sign-In flow cancelled/reauth: $diagnosticMsg", e)
+            if (isConfigurationOrPlayServicesError(diagnosticMsg)) {
                 onAuthError(formatSignInFailureMessage(activity, e))
             } else {
                 onAuthCancelled()
             }
+        } catch (ce: CancellationException) {
+            throw ce
         } catch (e: Exception) {
             Log.e(TAG, "Google Sign-In failed", e)
             onAuthError(formatSignInFailureMessage(activity, e))
