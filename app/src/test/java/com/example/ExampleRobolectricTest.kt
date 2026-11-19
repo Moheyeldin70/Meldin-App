@@ -3,8 +3,10 @@ package com.example
 import android.content.Context
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
+import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollTo
 import androidx.test.core.app.ApplicationProvider
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -34,7 +36,9 @@ class ExampleRobolectricTest {
   fun `main activity launches and transitions to sign in without crashing`() {
     composeTestRule.waitForIdle()
     composeTestRule.onNodeWithTag("skip_splash_button").performClick()
-    composeTestRule.waitForIdle()
-    composeTestRule.onNodeWithTag("google_sign_in_button").assertIsDisplayed()
+    composeTestRule.waitUntil(timeoutMillis = 3000) {
+      composeTestRule.onAllNodesWithTag("google_sign_in_button").fetchSemanticsNodes().isNotEmpty()
+    }
+    composeTestRule.onNodeWithTag("google_sign_in_button").performScrollTo().assertIsDisplayed()
   }
 }

@@ -3,6 +3,8 @@ package com.example.data.auth
 import android.app.Activity
 import android.content.Context
 import android.content.ContextWrapper
+import android.content.pm.PackageManager
+import android.os.Build
 import android.util.Log
 import androidx.credentials.ClearCredentialStateRequest
 import androidx.credentials.CredentialManager
@@ -32,6 +34,7 @@ import java.security.MessageDigest
 import java.security.SecureRandom
 
 private const val TAG = "AuthHelper"
+private const val EXPECTED_DEBUG_SHA1 = "B4:46:DA:DC:29:93:E4:56:C1:A4:71:37:39:80:7E:96:0E:9D:55:4D"
 
 private tailrec fun Context.findActivity(): Activity? = when (this) {
     is Activity -> this
@@ -56,6 +59,26 @@ private fun resolveWebClientId(context: Context): String? {
     if (resId == 0) return null
     return runCatching { context.getString(resId) }.getOrNull()?.takeIf { it.isNotBlank() }
 }
+
+private fun getAppSigningSha1(context: Context): String? = runCatching {
+    val pm = context.packageManager
+    val pkg = context.packageName
+    val signatures = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+        val info = pm.getPackageInfo(pkg, PackageManager.GET_SIGNING_CERTIFICATES)
+        val signingInfo = info.signingInfo
+        if (signingInfo?.hasMultipleSigners() == true) {
+            signingInfo.apkContentsSigners
+        } else {
+            signingInfo?.signingCertificateHistory
+        }
+    } else {
+        @Suppress("DEPRECATION")
+        pm.getPackageInfo(pkg, PackageManager.GET_SIGNATURES).signatures
+    }
+    val certBytes = signatures?.firstOrNull()?.toByteArray() ?: return@runCatching null
+    val digest = MessageDigest.getInstance("SHA-1").digest(certBytes)
+    digest.joinToString(":") { "%02X".format(it) }
+}.getOrNull()
 
 private fun isConfigurationOrPlayServicesError(message: String?): Boolean {
     if (message.isNullOrBlank()) return false
@@ -82,16 +105,31 @@ private fun isConfigurationOrPlayServicesError(message: String?): Boolean {
         lower.contains("error")
 }
 
-private fun formatSignInFailureMessage(e: Exception): String {
+private fun isReauthError(message: String?): Boolean {
+    if (message.isNullOrBlank()) return false
+    val lower = message.lowercase()
+    return lower.contains("reauth") || lower.contains("[16]") || lower.contains("16:")
+}
+
+private fun formatSignInFailureMessage(context: Context, e: Exception): String {
     val raw = e.localizedMessage?.takeIf { it.isNotBlank() }
         ?: (e as? GetCredentialException)?.errorMessage?.toString()?.takeIf { it.isNotBlank() }
         ?: "Google Sign-In failed (${e::class.java.simpleName})"
     val lower = raw.lowercase()
+    val actualSha1 = getAppSigningSha1(context)
     return when {
         e is NoCredentialException ->
             "No Google account credential available on this device. Ensure a Google account is signed in and Google Play Services is updated. ($raw)"
-        lower.contains("28444") || lower.contains("developer") || lower.contains("10:") || lower.contains("sha") ->
-            "Google Sign-In configuration mismatch (SHA-1 / OAuth client). Ensure the APK is signed with the registered debug.keystore and uses matching google-services.json. ($raw)"
+        isReauthError(raw) || lower.contains("28444") || lower.contains("developer") || lower.contains("10:") || lower.contains("sha") -> {
+            when {
+                actualSha1 != null && !actualSha1.equals(EXPECTED_DEBUG_SHA1, ignoreCase = true) ->
+                    "$raw\n\nThis APK's signing SHA-1 ($actualSha1) does not match the registered Firebase SHA-1 ($EXPECTED_DEBUG_SHA1). Push debug.keystore.base64 to GitHub or add this SHA-1 in Firebase Console."
+                actualSha1 != null ->
+                    "$raw\n\nAPK SHA-1 matches ($actualSha1). Please ensure your device has a screen lock/PIN set, clear Google Play Services cache, or confirm this Google account is allowed on the project's OAuth consent screen."
+                else ->
+                    "$raw\n\nCheck that the APK signing SHA-1 matches Firebase Console and your Google account is signed in on the device."
+            }
+        }
         else -> raw
     }
 }
@@ -139,6 +177,22 @@ fun attemptAutoSignIn(
     }
 }
 
+private suspend fun signInWithGoogleIdToken(
+    cred: androidx.credentials.Credential,
+    onAuthSuccess: () -> Unit,
+    onAuthError: (String) -> Unit
+) {
+    if (cred is CustomCredential && cred.type == TYPE_GOOGLE_ID_TOKEN_CREDENTIAL) {
+        val token = GoogleIdTokenCredential.createFrom(cred.data).idToken
+        Firebase.auth.signInWithCredential(
+            GoogleAuthProvider.getCredential(token, null)
+        ).await()
+        onAuthSuccess()
+    } else {
+        onAuthError("Unexpected credential type returned by Google Sign-In")
+    }
+}
+
 fun onGoogleSignInClicked(
     context: Context,
     credentialManager: CredentialManager,
@@ -164,25 +218,44 @@ fun onGoogleSignInClicked(
                 .addCredentialOption(signInOption)
                 .build()
             val cred = credentialManager.getCredential(activity, request).credential
-            if (cred is CustomCredential && cred.type == TYPE_GOOGLE_ID_TOKEN_CREDENTIAL) {
-                val token = GoogleIdTokenCredential.createFrom(cred.data).idToken
-                Firebase.auth.signInWithCredential(
-                    GoogleAuthProvider.getCredential(token, null)
-                ).await()
-                onAuthSuccess()
-            } else {
-                onAuthError("Unexpected credential type returned by Google Sign-In")
-            }
+            signInWithGoogleIdToken(cred, onAuthSuccess, onAuthError)
         } catch (e: GetCredentialCancellationException) {
-            Log.w(TAG, "Google Sign-In flow cancelled or dismissed: ${e.message}", e)
-            if (isConfigurationOrPlayServicesError(e.message)) {
-                onAuthError(formatSignInFailureMessage(e))
+            Log.w(TAG, "Primary Google Sign-In flow cancelled/reauth: ${e.message}", e)
+            if (isReauthError(e.message)) {
+                // Retry once after clearing stale Credential Manager state using a separate single-option GetGoogleIdOption request
+                try {
+                    runCatching {
+                        credentialManager.clearCredentialState(ClearCredentialStateRequest())
+                    }
+                    val googleIdOption = GetGoogleIdOption.Builder()
+                        .setFilterByAuthorizedAccounts(false)
+                        .setServerClientId(clientId)
+                        .setAutoSelectEnabled(false)
+                        .build()
+                    val fallbackRequest = GetCredentialRequest.Builder()
+                        .addCredentialOption(googleIdOption)
+                        .build()
+                    val fallbackCred = credentialManager.getCredential(activity, fallbackRequest).credential
+                    signInWithGoogleIdToken(fallbackCred, onAuthSuccess, onAuthError)
+                } catch (fallbackEx: GetCredentialCancellationException) {
+                    Log.w(TAG, "Fallback Google ID Sign-In also cancelled/reauth: ${fallbackEx.message}", fallbackEx)
+                    if (isConfigurationOrPlayServicesError(fallbackEx.message)) {
+                        onAuthError(formatSignInFailureMessage(activity, fallbackEx))
+                    } else {
+                        onAuthCancelled()
+                    }
+                } catch (fallbackEx: Exception) {
+                    Log.e(TAG, "Fallback Google ID Sign-In failed", fallbackEx)
+                    onAuthError(formatSignInFailureMessage(activity, fallbackEx))
+                }
+            } else if (isConfigurationOrPlayServicesError(e.message)) {
+                onAuthError(formatSignInFailureMessage(activity, e))
             } else {
                 onAuthCancelled()
             }
         } catch (e: Exception) {
             Log.e(TAG, "Google Sign-In failed", e)
-            onAuthError(formatSignInFailureMessage(e))
+            onAuthError(formatSignInFailureMessage(activity, e))
         }
     }
 }
