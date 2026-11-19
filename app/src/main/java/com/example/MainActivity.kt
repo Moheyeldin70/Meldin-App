@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -53,6 +54,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
@@ -77,7 +79,10 @@ import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.credentials.CredentialManager
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.ViewModelProvider.AndroidViewModelFactory.Companion.APPLICATION_KEY
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewmodel.initializer
@@ -90,9 +95,12 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import com.example.data.PreferencesManager
 import com.example.data.auth.attemptAutoSignIn
-import com.example.data.auth.authStateFlow
+import com.example.data.model.AdminSecurityConfig
+import com.example.data.model.Comment
 import com.example.data.model.ContentType
 import com.example.data.model.Post
+import com.example.data.model.PrivateItem
+import com.example.data.model.SavedPost
 import com.example.data.model.UiState
 import com.example.data.repository.MeldinRepository
 import com.example.localization.LocalMeldinStrings
@@ -109,6 +117,7 @@ import com.example.ui.theme.ThemePreference
 import com.example.ui.viewmodel.MeldinViewModel
 import com.google.firebase.Firebase
 import com.google.firebase.FirebaseApp
+import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.auth.FirebaseUser
 import com.google.firebase.auth.auth
 import com.google.firebase.firestore.FirebaseFirestore
@@ -200,31 +209,57 @@ private fun MeldinAuthenticatedHost(
     onSelectLanguage: (String) -> Unit
 ) {
     val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
     val scope = rememberCoroutineScope()
     val auth = remember { Firebase.auth }
-    val currentUser by auth.authStateFlow().collectAsStateWithLifecycle(initialValue = auth.currentUser)
+    var currentUser by remember { mutableStateOf(auth.currentUser) }
+
+    DisposableEffect(auth, lifecycleOwner) {
+        val authListener = FirebaseAuth.AuthStateListener { firebaseAuth ->
+            currentUser = firebaseAuth.currentUser
+        }
+        val lifecycleObserver = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                val refreshed = auth.currentUser
+                if (currentUser?.uid != refreshed?.uid || (currentUser == null) != (refreshed == null)) {
+                    currentUser = refreshed
+                }
+            }
+        }
+        currentUser = auth.currentUser
+        auth.addAuthStateListener(authListener)
+        lifecycleOwner.lifecycle.addObserver(lifecycleObserver)
+        onDispose {
+            auth.removeAuthStateListener(authListener)
+            lifecycleOwner.lifecycle.removeObserver(lifecycleObserver)
+        }
+    }
 
     LaunchedEffect(Unit) {
-        runCatching {
-            val credentialManager = CredentialManager.create(context)
-            attemptAutoSignIn(
-                context = context,
-                credentialManager = credentialManager,
-                onAuthSuccess = {},
-                onUnauthenticated = {},
-                scope = scope
-            )
+        if (auth.currentUser == null) {
+            runCatching {
+                val credentialManager = CredentialManager.create(context)
+                attemptAutoSignIn(
+                    context = context,
+                    credentialManager = credentialManager,
+                    onAuthSuccess = { currentUser = auth.currentUser },
+                    onUnauthenticated = {},
+                    scope = scope
+                )
+            }
+        } else {
+            currentUser = auth.currentUser
         }
     }
 
     val user = currentUser
-    if (user == null) {
+    if (user == null || user.uid.isBlank()) {
         AuthScreen(
             themePreference = themePreference,
             currentLanguageCode = languageCode,
             onChangeTheme = onChangeTheme,
             onSelectLanguage = onSelectLanguage,
-            onAuthSuccess = {}
+            onAuthSuccess = { currentUser = auth.currentUser }
         )
     } else {
         key(user.uid) {
@@ -233,14 +268,17 @@ private fun MeldinAuthenticatedHost(
                 themePreference = themePreference,
                 currentLanguageCode = languageCode,
                 onChangeTheme = onChangeTheme,
-                onSelectLanguage = onSelectLanguage
+                onSelectLanguage = onSelectLanguage,
+                onAccountSwitched = { currentUser = auth.currentUser }
             )
         }
     }
 }
 
 @Composable
-private fun FirebaseConfigMissingScreen() {
+private fun FirebaseConfigMissingScreen(
+    detail: String = "This APK was built without app/google-services.json. Add app/google-services.json to your repository or set the GOOGLE_SERVICES_JSON secret in GitHub Actions and rebuild the APK."
+) {
     val strings = LocalMeldinStrings.current
     Box(
         modifier = Modifier
@@ -275,7 +313,7 @@ private fun FirebaseConfigMissingScreen() {
                     textAlign = TextAlign.Center
                 )
                 Text(
-                    text = "This APK was built without app/google-services.json. Add app/google-services.json to your repository or set the GOOGLE_SERVICES_JSON secret in GitHub Actions and rebuild the APK.",
+                    text = detail,
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     textAlign = TextAlign.Center
@@ -291,22 +329,37 @@ private fun AuthenticatedMeldinShell(
     themePreference: ThemePreference,
     currentLanguageCode: String,
     onChangeTheme: (ThemePreference) -> Unit,
-    onSelectLanguage: (String) -> Unit
+    onSelectLanguage: (String) -> Unit,
+    onAccountSwitched: () -> Unit
 ) {
-    val strings = LocalMeldinStrings.current
+    val context = LocalContext.current
     val uid = user.uid
     val displayName = user.displayName ?: user.email?.substringBefore("@") ?: "Meldin Member"
     val photoUrl = user.photoUrl?.toString()
+
+    val firestoreResult = remember(context) {
+        runCatching {
+            val databaseId = context.getString(R.string.firestore_database_id)
+            require(databaseId.isNotBlank()) { "firestore_database_id is blank" }
+            FirebaseFirestore.getInstance(databaseId)
+        }
+    }
+    val firestoreError = firestoreResult.exceptionOrNull()
+    if (firestoreError != null) {
+        FirebaseConfigMissingScreen(
+            detail = firestoreError.localizedMessage ?: "Failed to initialize Firestore database."
+        )
+        return
+    }
+    val db = firestoreResult.getOrThrow()
 
     val viewModel: MeldinViewModel = viewModel(
         key = uid,
         factory = viewModelFactory {
             initializer {
-                val app = checkNotNull(this[APPLICATION_KEY]) {
+                checkNotNull(this[APPLICATION_KEY]) {
                     "APPLICATION_KEY missing from CreationExtras"
                 }
-                val databaseId = app.getString(R.string.firestore_database_id)
-                val db = FirebaseFirestore.getInstance(databaseId)
                 MeldinViewModel(
                     repository = MeldinRepository(db),
                     currentUserId = uid,
@@ -333,14 +386,6 @@ private fun AuthenticatedMeldinShell(
     val activeCommentsState by viewModel.activeCommentsState.collectAsStateWithLifecycle()
     val isActivePostLiked by viewModel.isActivePostLiked.collectAsStateWithLifecycle()
 
-    val navController = rememberNavController()
-    val navBackStackEntry by navController.currentBackStackEntryAsState()
-    val currentDestination = navBackStackEntry?.destination
-    val isOnAccountScreen = currentDestination?.route == MeldinRoutes.ROUTE_ACCOUNT
-
-    var libraryInitialSubTab by rememberSaveable { mutableStateOf(0) }
-    var fallbackPost by remember { mutableStateOf<Post?>(null) }
-
     val snackbarHostState = remember { SnackbarHostState() }
     LaunchedEffect(actionMessage) {
         val msg = actionMessage
@@ -349,6 +394,102 @@ private fun AuthenticatedMeldinShell(
             viewModel.clearActionMessage()
         }
     }
+
+    MeldinAuthenticatedScaffold(
+        uid = uid,
+        displayName = displayName,
+        userEmail = user.email,
+        photoUrl = photoUrl,
+        isAdmin = isAdmin,
+        isAdminUnlocked = isAdminUnlocked,
+        adminConfig = adminConfig,
+        postsState = postsState,
+        savedPostsState = savedPostsState,
+        privateItemsState = privateItemsState,
+        searchQuery = searchQuery,
+        selectedCategory = selectedCategory,
+        isBusy = isBusy,
+        activePostId = activePostId,
+        activeCommentsState = activeCommentsState,
+        isActivePostLiked = isActivePostLiked,
+        themePreference = themePreference,
+        currentLanguageCode = currentLanguageCode,
+        snackbarHostState = snackbarHostState,
+        onChangeTheme = onChangeTheme,
+        onSelectLanguage = onSelectLanguage,
+        onSearchQueryChange = viewModel::updateSearchQuery,
+        onSelectCategory = viewModel::selectCategory,
+        onOpenPost = viewModel::openPost,
+        onClosePost = viewModel::closePost,
+        onToggleSavePost = viewModel::toggleSavePost,
+        onToggleLikeActivePost = viewModel::toggleLikeActivePost,
+        onAddComment = viewModel::addComment,
+        onDeleteComment = viewModel::deleteComment,
+        onCreatePrivateItem = viewModel::createPrivateItem,
+        onUpdatePrivateItem = viewModel::updatePrivateItem,
+        onDeletePrivateItem = viewModel::deletePrivateItem,
+        onVerifyAdminPassword = viewModel::verifyAndUnlockAdmin,
+        onSetAdminPassword = viewModel::setAndUnlockAdminPassword,
+        onLockAdmin = viewModel::lockAdminDashboard,
+        onPublishPost = viewModel::publishPost,
+        onUpdatePost = viewModel::updatePost,
+        onDeletePost = viewModel::deletePost,
+        onPublishStarterPack = viewModel::publishStarterPack,
+        onAccountSwitched = onAccountSwitched
+    )
+}
+
+@Composable
+internal fun MeldinAuthenticatedScaffold(
+    uid: String,
+    displayName: String,
+    userEmail: String?,
+    photoUrl: String?,
+    isAdmin: Boolean,
+    isAdminUnlocked: Boolean,
+    adminConfig: AdminSecurityConfig?,
+    postsState: UiState<List<Post>>,
+    savedPostsState: UiState<List<SavedPost>>,
+    privateItemsState: UiState<List<PrivateItem>>,
+    searchQuery: String,
+    selectedCategory: String?,
+    isBusy: Boolean,
+    activePostId: String?,
+    activeCommentsState: UiState<List<Comment>>,
+    isActivePostLiked: Boolean,
+    themePreference: ThemePreference,
+    currentLanguageCode: String,
+    snackbarHostState: SnackbarHostState = remember { SnackbarHostState() },
+    onChangeTheme: (ThemePreference) -> Unit,
+    onSelectLanguage: (String) -> Unit,
+    onSearchQueryChange: (String) -> Unit,
+    onSelectCategory: (String?) -> Unit,
+    onOpenPost: (String) -> Unit,
+    onClosePost: () -> Unit,
+    onToggleSavePost: (Post, Boolean) -> Unit,
+    onToggleLikeActivePost: () -> Unit,
+    onAddComment: (String, String) -> Unit,
+    onDeleteComment: (String, String) -> Unit,
+    onCreatePrivateItem: (ContentType, String, String, String, String, String, String, Long, () -> Unit) -> Unit,
+    onUpdatePrivateItem: (String, ContentType, String, String, String, String, String, String, Long, () -> Unit) -> Unit,
+    onDeletePrivateItem: (String) -> Unit,
+    onVerifyAdminPassword: (String, () -> Unit) -> Unit,
+    onSetAdminPassword: (String, Boolean, (String) -> Unit) -> Unit,
+    onLockAdmin: () -> Unit,
+    onPublishPost: (ContentType, String, String, String, String, String, String, Long, String, () -> Unit) -> Unit,
+    onUpdatePost: (String, ContentType, String, String, String, String, String, String, Long, () -> Unit) -> Unit,
+    onDeletePost: (String) -> Unit,
+    onPublishStarterPack: () -> Unit,
+    onAccountSwitched: () -> Unit
+) {
+    val strings = LocalMeldinStrings.current
+    val navController = rememberNavController()
+    val navBackStackEntry by navController.currentBackStackEntryAsState()
+    val currentDestination = navBackStackEntry?.destination
+    val isOnAccountScreen = currentDestination?.route == MeldinRoutes.ROUTE_ACCOUNT
+
+    var libraryInitialSubTab by rememberSaveable { mutableStateOf(0) }
+    var fallbackPost by remember { mutableStateOf<Post?>(null) }
 
     val allPosts = (postsState as? UiState.Success)?.data ?: emptyList()
     val savedPostIds = remember(savedPostsState) {
@@ -488,10 +629,15 @@ private fun AuthenticatedMeldinShell(
                     }
                 }
 
-                Box(modifier = Modifier.weight(1f)) {
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxHeight()
+                ) {
                     NavHost(
                         navController = navController,
                         startDestination = MeldinRoutes.ROUTE_LONG_VIDEOS,
+                        modifier = Modifier.fillMaxSize(),
                         enterTransition = { fadeIn(tween(220)) },
                         exitTransition = { fadeOut(tween(180)) }
                     ) {
@@ -502,13 +648,13 @@ private fun AuthenticatedMeldinShell(
                                 savedPostIds = savedPostIds,
                                 searchQuery = searchQuery,
                                 selectedCategory = selectedCategory,
-                                onSearchQueryChange = viewModel::updateSearchQuery,
-                                onSelectCategory = viewModel::selectCategory,
+                                onSearchQueryChange = onSearchQueryChange,
+                                onSelectCategory = onSelectCategory,
                                 onOpenPost = { post ->
                                     fallbackPost = post
-                                    viewModel.openPost(post.id)
+                                    onOpenPost(post.id)
                                 },
-                                onToggleSave = viewModel::toggleSavePost,
+                                onToggleSave = onToggleSavePost,
                                 onNavigateToPrivateStudio = {
                                     libraryInitialSubTab = 1
                                     navigateToTab(MeldinRoutes.ROUTE_LIBRARY)
@@ -524,13 +670,13 @@ private fun AuthenticatedMeldinShell(
                                 savedPostIds = savedPostIds,
                                 searchQuery = searchQuery,
                                 selectedCategory = selectedCategory,
-                                onSearchQueryChange = viewModel::updateSearchQuery,
-                                onSelectCategory = viewModel::selectCategory,
+                                onSearchQueryChange = onSearchQueryChange,
+                                onSelectCategory = onSelectCategory,
                                 onOpenPost = { post ->
                                     fallbackPost = post
-                                    viewModel.openPost(post.id)
+                                    onOpenPost(post.id)
                                 },
-                                onToggleSave = viewModel::toggleSavePost,
+                                onToggleSave = onToggleSavePost,
                                 onNavigateToPrivateStudio = {
                                     libraryInitialSubTab = 1
                                     navigateToTab(MeldinRoutes.ROUTE_LIBRARY)
@@ -546,13 +692,13 @@ private fun AuthenticatedMeldinShell(
                                 savedPostIds = savedPostIds,
                                 searchQuery = searchQuery,
                                 selectedCategory = selectedCategory,
-                                onSearchQueryChange = viewModel::updateSearchQuery,
-                                onSelectCategory = viewModel::selectCategory,
+                                onSearchQueryChange = onSearchQueryChange,
+                                onSelectCategory = onSelectCategory,
                                 onOpenPost = { post ->
                                     fallbackPost = post
-                                    viewModel.openPost(post.id)
+                                    onOpenPost(post.id)
                                 },
-                                onToggleSave = viewModel::toggleSavePost,
+                                onToggleSave = onToggleSavePost,
                                 onNavigateToPrivateStudio = {
                                     libraryInitialSubTab = 1
                                     navigateToTab(MeldinRoutes.ROUTE_LIBRARY)
@@ -568,13 +714,13 @@ private fun AuthenticatedMeldinShell(
                                 savedPostIds = savedPostIds,
                                 searchQuery = searchQuery,
                                 selectedCategory = selectedCategory,
-                                onSearchQueryChange = viewModel::updateSearchQuery,
-                                onSelectCategory = viewModel::selectCategory,
+                                onSearchQueryChange = onSearchQueryChange,
+                                onSelectCategory = onSelectCategory,
                                 onOpenPost = { post ->
                                     fallbackPost = post
-                                    viewModel.openPost(post.id)
+                                    onOpenPost(post.id)
                                 },
-                                onToggleSave = viewModel::toggleSavePost,
+                                onToggleSave = onToggleSavePost,
                                 onNavigateToPrivateStudio = {
                                     libraryInitialSubTab = 1
                                     navigateToTab(MeldinRoutes.ROUTE_LIBRARY)
@@ -592,15 +738,15 @@ private fun AuthenticatedMeldinShell(
                                 isBusy = isBusy,
                                 onOpenPost = { post ->
                                     fallbackPost = post
-                                    viewModel.openPost(post.id)
+                                    onOpenPost(post.id)
                                 },
                                 onUnsavePost = { saved ->
                                     val stub = Post(id = saved.postId, title = saved.title, type = saved.type)
-                                    viewModel.toggleSavePost(stub, currentlySaved = true)
+                                    onToggleSavePost(stub, true)
                                 },
-                                onCreatePrivateItem = viewModel::createPrivateItem,
-                                onUpdatePrivateItem = viewModel::updatePrivateItem,
-                                onDeletePrivateItem = viewModel::deletePrivateItem,
+                                onCreatePrivateItem = onCreatePrivateItem,
+                                onUpdatePrivateItem = onUpdatePrivateItem,
+                                onDeletePrivateItem = onDeletePrivateItem,
                                 onOpenAccount = ::navigateToAccount
                             )
                         }
@@ -608,7 +754,7 @@ private fun AuthenticatedMeldinShell(
                         composable(MeldinRoutes.ROUTE_ACCOUNT) {
                             AccountScreen(
                                 userName = displayName,
-                                userEmail = user.email,
+                                userEmail = userEmail,
                                 userPhotoUrl = photoUrl,
                                 isAdmin = isAdmin,
                                 isAdminUnlocked = isAdminUnlocked,
@@ -619,14 +765,14 @@ private fun AuthenticatedMeldinShell(
                                 currentLanguageCode = currentLanguageCode,
                                 onChangeTheme = onChangeTheme,
                                 onSelectLanguage = onSelectLanguage,
-                                onVerifyAdminPassword = viewModel::verifyAndUnlockAdmin,
-                                onSetAdminPassword = viewModel::setAndUnlockAdminPassword,
-                                onLockAdmin = viewModel::lockAdminDashboard,
-                                onPublishPost = viewModel::publishPost,
-                                onUpdatePost = viewModel::updatePost,
-                                onDeletePost = viewModel::deletePost,
-                                onPublishStarterPack = viewModel::publishStarterPack,
-                                onAccountSwitched = {},
+                                onVerifyAdminPassword = onVerifyAdminPassword,
+                                onSetAdminPassword = onSetAdminPassword,
+                                onLockAdmin = onLockAdmin,
+                                onPublishPost = onPublishPost,
+                                onUpdatePost = onUpdatePost,
+                                onDeletePost = onDeletePost,
+                                onPublishStarterPack = onPublishStarterPack,
+                                onAccountSwitched = onAccountSwitched,
                                 onBack = { navController.popBackStack() }
                             )
                         }
@@ -647,13 +793,13 @@ private fun AuthenticatedMeldinShell(
             commentsState = activeCommentsState,
             currentUserId = uid,
             isAdmin = isAdmin,
-            onToggleLike = viewModel::toggleLikeActivePost,
-            onToggleSave = { viewModel.toggleSavePost(activePost, activePost.id in savedPostIds) },
-            onAddComment = { text -> viewModel.addComment(activePost.id, text) },
-            onDeleteComment = { commentId -> viewModel.deleteComment(activePost.id, commentId) },
+            onToggleLike = onToggleLikeActivePost,
+            onToggleSave = { onToggleSavePost(activePost, activePost.id in savedPostIds) },
+            onAddComment = { text -> onAddComment(activePost.id, text) },
+            onDeleteComment = { commentId -> onDeleteComment(activePost.id, commentId) },
             onDismiss = {
                 fallbackPost = null
-                viewModel.closePost()
+                onClosePost()
             }
         )
     }

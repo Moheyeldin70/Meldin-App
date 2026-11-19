@@ -91,6 +91,8 @@ import com.example.ui.theme.DarkPrimaryOrange
 import com.example.ui.theme.LightBackground
 import com.example.ui.theme.LightPrimaryOrange
 import com.example.ui.theme.ThemePreference
+import com.google.firebase.Firebase
+import com.google.firebase.auth.auth
 
 @Composable
 fun AccountScreen(
@@ -120,7 +122,9 @@ fun AccountScreen(
     val strings = LocalMeldinStrings.current
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    val credentialManager = remember(context) { CredentialManager.create(context) }
+    val credentialManager = remember(context) {
+        runCatching { CredentialManager.create(context) }.getOrNull()
+    }
 
     var showLanguageDialog by remember { mutableStateOf(false) }
     var showAdminDashboard by remember { mutableStateOf(false) }
@@ -388,9 +392,14 @@ fun AccountScreen(
                 OutlinedButton(
                     onClick = {
                         switchError = null
+                        val cm = credentialManager
+                        if (cm == null) {
+                            switchError = "Google Credential Manager is unavailable on this device."
+                            return@OutlinedButton
+                        }
                         onGoogleSignInClicked(
                             context = context,
-                            credentialManager = credentialManager,
+                            credentialManager = cm,
                             onAuthSuccess = onAccountSwitched,
                             onAuthError = { switchError = it },
                             scope = scope
@@ -409,7 +418,12 @@ fun AccountScreen(
                 Button(
                     onClick = {
                         onLockAdmin()
-                        signOut(credentialManager = credentialManager, scope = scope)
+                        val cm = credentialManager
+                        if (cm != null) {
+                            signOut(credentialManager = cm, scope = scope)
+                        } else {
+                            Firebase.auth.signOut()
+                        }
                     },
                     colors = ButtonDefaults.buttonColors(
                         containerColor = MaterialTheme.colorScheme.errorContainer,

@@ -69,7 +69,9 @@ fun AuthScreen(
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    val credentialManager = remember(context) { CredentialManager.create(context) }
+    val credentialManager = remember(context) {
+        runCatching { CredentialManager.create(context) }.getOrNull()
+    }
     val strings = LocalMeldinStrings.current
 
     var isLoading by remember { mutableStateOf(false) }
@@ -208,10 +210,15 @@ fun AuthScreen(
                 Button(
                     onClick = {
                         errorMessage = null
+                        val cm = credentialManager
+                        if (cm == null) {
+                            errorMessage = "Google Credential Manager is unavailable on this device."
+                            return@Button
+                        }
                         isLoading = true
                         onGoogleSignInClicked(
                             context = context,
-                            credentialManager = credentialManager,
+                            credentialManager = cm,
                             onAuthSuccess = {
                                 isLoading = false
                                 onAuthSuccess()

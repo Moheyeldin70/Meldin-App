@@ -2,12 +2,15 @@ package com.example.data.auth
 
 import android.app.Activity
 import android.content.Context
+import android.content.ContextWrapper
 import android.util.Log
 import androidx.credentials.ClearCredentialStateRequest
 import androidx.credentials.CredentialManager
 import androidx.credentials.CustomCredential
 import androidx.credentials.GetCredentialRequest
 import androidx.credentials.exceptions.GetCredentialCancellationException
+import androidx.credentials.exceptions.GetCredentialException
+import androidx.credentials.exceptions.NoCredentialException
 import com.google.android.libraries.identity.googleid.GetGoogleIdOption
 import com.google.android.libraries.identity.googleid.GetSignInWithGoogleOption
 import com.google.android.libraries.identity.googleid.GoogleIdTokenCredential
@@ -30,6 +33,12 @@ import java.security.SecureRandom
 
 private const val TAG = "AuthHelper"
 
+private tailrec fun Context.findActivity(): Activity? = when (this) {
+    is Activity -> this
+    is ContextWrapper -> baseContext.findActivity()
+    else -> null
+}
+
 fun FirebaseAuth.authStateFlow(): Flow<FirebaseUser?> = callbackFlow {
     val listener = FirebaseAuth.AuthStateListener { auth ->
         trySend(auth.currentUser)
@@ -48,6 +57,45 @@ private fun resolveWebClientId(context: Context): String? {
     return runCatching { context.getString(resId) }.getOrNull()?.takeIf { it.isNotBlank() }
 }
 
+private fun isConfigurationOrPlayServicesError(message: String?): Boolean {
+    if (message.isNullOrBlank()) return false
+    val lower = message.lowercase()
+    if (lower.contains("activity is cancelled by the user") ||
+        lower.contains("user canceled") ||
+        lower.contains("user cancelled")
+    ) {
+        return false
+    }
+    return lower.contains("28444") ||
+        lower.contains("developer") ||
+        lower.contains("sha") ||
+        lower.contains("reauth") ||
+        lower.contains("[16]") ||
+        lower.contains("16:") ||
+        lower.contains("10:") ||
+        lower.contains("token") ||
+        lower.contains("config") ||
+        lower.contains("network") ||
+        lower.contains("internal") ||
+        lower.contains("play services") ||
+        lower.contains("failed") ||
+        lower.contains("error")
+}
+
+private fun formatSignInFailureMessage(e: Exception): String {
+    val raw = e.localizedMessage?.takeIf { it.isNotBlank() }
+        ?: (e as? GetCredentialException)?.errorMessage?.toString()?.takeIf { it.isNotBlank() }
+        ?: "Google Sign-In failed (${e::class.java.simpleName})"
+    val lower = raw.lowercase()
+    return when {
+        e is NoCredentialException ->
+            "No Google account credential available on this device. Ensure a Google account is signed in and Google Play Services is updated. ($raw)"
+        lower.contains("28444") || lower.contains("developer") || lower.contains("10:") || lower.contains("sha") ->
+            "Google Sign-In configuration mismatch (SHA-1 / OAuth client). Ensure the APK is signed with the registered debug.keystore and uses matching google-services.json. ($raw)"
+        else -> raw
+    }
+}
+
 fun attemptAutoSignIn(
     context: Context,
     credentialManager: CredentialManager,
@@ -64,6 +112,7 @@ fun attemptAutoSignIn(
         onUnauthenticated()
         return
     }
+    val hostContext: Context = context.findActivity() ?: context
     scope.launch {
         try {
             val googleIdOption = GetGoogleIdOption.Builder()
@@ -74,7 +123,7 @@ fun attemptAutoSignIn(
             val request = GetCredentialRequest.Builder()
                 .addCredentialOption(googleIdOption)
                 .build()
-            val cred = credentialManager.getCredential(context, request).credential
+            val cred = credentialManager.getCredential(hostContext, request).credential
             if (cred is CustomCredential && cred.type == TYPE_GOOGLE_ID_TOKEN_CREDENTIAL) {
                 val token = GoogleIdTokenCredential.createFrom(cred.data).idToken
                 Firebase.auth.signInWithCredential(
@@ -103,17 +152,17 @@ fun onGoogleSignInClicked(
         onAuthError("Google Sign-In configuration missing: default_web_client_id not found")
         return
     }
-    val activity = context as? Activity
+    val activity = context.findActivity()
     if (activity == null) {
         onAuthError("Unable to resolve Activity for Credential Manager")
         return
     }
-    val signInOption = GetSignInWithGoogleOption.Builder(serverClientId = clientId).build()
-    val request = GetCredentialRequest.Builder()
-        .addCredentialOption(signInOption)
-        .build()
     scope.launch {
         try {
+            val signInOption = GetSignInWithGoogleOption.Builder(serverClientId = clientId).build()
+            val request = GetCredentialRequest.Builder()
+                .addCredentialOption(signInOption)
+                .build()
             val cred = credentialManager.getCredential(activity, request).credential
             if (cred is CustomCredential && cred.type == TYPE_GOOGLE_ID_TOKEN_CREDENTIAL) {
                 val token = GoogleIdTokenCredential.createFrom(cred.data).idToken
@@ -122,14 +171,18 @@ fun onGoogleSignInClicked(
                 ).await()
                 onAuthSuccess()
             } else {
-                onAuthError("Unexpected credential type")
+                onAuthError("Unexpected credential type returned by Google Sign-In")
             }
         } catch (e: GetCredentialCancellationException) {
             Log.w(TAG, "Google Sign-In flow cancelled or dismissed: ${e.message}", e)
-            onAuthCancelled()
+            if (isConfigurationOrPlayServicesError(e.message)) {
+                onAuthError(formatSignInFailureMessage(e))
+            } else {
+                onAuthCancelled()
+            }
         } catch (e: Exception) {
             Log.e(TAG, "Google Sign-In failed", e)
-            onAuthError(e.localizedMessage ?: "Sign in failed")
+            onAuthError(formatSignInFailureMessage(e))
         }
     }
 }
